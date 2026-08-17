@@ -26,7 +26,8 @@ EXTRA_DIST += gen_defs.py meson_options.txt meson.build \
               fuzz/meson.build checkasm/meson.build \
               compare/meson.build \
               profile/meson.build test/meson.build \
-              test/render_api.c compare/test/font1.ttf
+              test/render_api.c test/subtitle_layout.c \
+              compare/test/font1.ttf
 
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = libass.pc
@@ -51,6 +52,14 @@ test_render_api_CPPFLAGS = $(AM_CPPFLAGS) \
     -DASS_TEST_FONT='"$(abs_top_srcdir)/compare/test/font1.ttf"'
 test_render_api_LDADD = libass/libass.la
 test_render_api_LDFLAGS = $(AM_LDFLAGS) -static
+
+if FONTCONFIG
+check_PROGRAMS += test/subtitle-layout
+TESTS += test/subtitle-layout$(EXEEXT)
+test_subtitle_layout_SOURCES = test/subtitle_layout.c
+test_subtitle_layout_LDADD = libass/libass.la
+test_subtitle_layout_LDFLAGS = $(AM_LDFLAGS) -static
+endif
 
 # Tests
 if ENABLE_FUZZ
