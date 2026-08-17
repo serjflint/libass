@@ -21,6 +21,7 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stddef.h>
 #include <string.h>
 #include <stdbool.h>
 
@@ -3367,15 +3368,32 @@ static ASS_Image *ass_free_image(ASS_Image *img) {
  *        0 if identical, 1 if different positions, 2 if different content.
  *        Can be NULL, in that case no detection is performed.
  */
-ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
-                            long long now, int *detect_change)
+static ASS_RenderStatus render_start_status(ASS_Renderer *priv,
+                                            ASS_Track *track)
+{
+    if (priv->library != track->library)
+        return ASS_RENDER_INVALID_REQUEST;
+    if ((!priv->settings.frame_width && !priv->settings.frame_height) ||
+        !priv->fontselect)
+        return ASS_RENDER_NOT_READY;
+    return ASS_RENDER_OK;
+}
+
+static ASS_Image *ass_render_frame_internal(ASS_Renderer *priv,
+                                            ASS_Track *track,
+                                            long long now,
+                                            int *detect_change,
+                                            ASS_RenderStatus *status)
 {
     // init frame
     if (!ass_start_frame(priv, track, now)) {
+        *status = render_start_status(priv, track);
         if (detect_change)
             *detect_change = 2;
         return NULL;
     }
+
+    *status = ASS_RENDER_OK;
 
     // render events separately
     int cnt = 0;
@@ -3440,6 +3458,64 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
         ass_prune_events(track, now - track->parser_priv->prune_delay);
 
     return priv->images_root;
+}
+
+ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
+                            long long now, int *detect_change)
+{
+    ASS_RenderStatus status;
+    return ass_render_frame_internal(priv, track, now, detect_change, &status);
+}
+
+#define FIELD_END(type, field) \
+    (offsetof(type, field) + sizeof(((type *) 0)->field))
+
+int ass_render_frame2(ASS_Renderer *renderer,
+                      const ASS_RenderRequest *request,
+                      ASS_RenderResult *result)
+{
+    if (!result)
+        return -1;
+
+    size_t capacity = result->struct_size;
+    memset(result, 0, capacity < sizeof(*result) ? capacity : sizeof(*result));
+    if (capacity >= sizeof(result->struct_size))
+        result->struct_size = sizeof(*result);
+    if (capacity < FIELD_END(ASS_RenderResult, images))
+        return -1;
+    if (capacity >= FIELD_END(ASS_RenderResult, change))
+        result->change = -1;
+
+    if (!renderer || !request ||
+        request->struct_size < FIELD_END(ASS_RenderRequest, now_ms)) {
+        result->status = ASS_RENDER_INVALID_REQUEST;
+        return -1;
+    }
+
+    unsigned flags = request->struct_size >= FIELD_END(ASS_RenderRequest, flags)
+                   ? request->flags : 0;
+    if (flags & ~ASS_RENDER_DETECT_CHANGE) {
+        result->status = ASS_RENDER_INVALID_REQUEST;
+        return 0;
+    }
+    if (!request->track) {
+        result->status = ASS_RENDER_INVALID_REQUEST;
+        return 0;
+    }
+    if ((flags & ASS_RENDER_DETECT_CHANGE) &&
+        capacity < FIELD_END(ASS_RenderResult, change)) {
+        result->status = ASS_RENDER_INVALID_REQUEST;
+        return -1;
+    }
+
+    int change = -1;
+    result->images = ass_render_frame_internal(
+        renderer, request->track, request->now_ms,
+        flags & ASS_RENDER_DETECT_CHANGE ? &change : NULL,
+        &result->status);
+    if (capacity >= FIELD_END(ASS_RenderResult, change))
+        result->change = change;
+    return 0;
 }
 
 /**
