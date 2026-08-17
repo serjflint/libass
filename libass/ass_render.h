@@ -30,6 +30,7 @@
 #include <hb.h>
 
 #include "ass.h"
+#include "ass_layout.h"
 #include "ass_font.h"
 #include "ass_bitmap.h"
 #include "ass_cache.h"
@@ -86,6 +87,7 @@ typedef struct {
     int detect_collisions;
     int shift_direction;
     ASS_Event *event;
+    ASS_LayoutEvent metrics;
 } EventImages;
 
 typedef enum {
@@ -125,6 +127,10 @@ typedef struct {
 // GlyphInfo and TextInfo are used for text centering and word-wrapping operations
 typedef struct glyph_info {
     unsigned symbol;
+    unsigned original_symbol;
+    size_t cluster_start;
+    size_t cluster_end;
+    bool cluster_root;
     bool skip;                  // skip glyph when layouting text
     bool is_trimmed_whitespace;
     ASS_Font *font;
@@ -172,6 +178,7 @@ typedef struct glyph_info {
     int fade;
 
     int shape_run_id;
+    int line;
 
     ASS_Vector shift;
     Bitmap *bm, *bm_o;
@@ -214,6 +221,13 @@ struct render_context {
 
     ASS_Event *event;
     ASS_Style *style;
+
+    bool collect_metrics;
+    bool metrics_failed;
+    ASS_LayoutUnit *cluster_metrics;
+    ASS_LayoutUnit **cluster_metrics_tail;
+    ASS_LayoutUnit *current_cluster_metrics;
+    ASS_LayoutOutline **current_cluster_outline_tail;
 
     ASS_Font *font;
     double font_size;
@@ -321,6 +335,16 @@ struct ass_renderer {
 
     EventImages *eimg;          // temporary buffer for sorting rendered events
     int eimg_size;              // allocated buffer size
+    ASS_Layout layout;
+    int metrics_count;          // initialized EventImages metrics records
+    ASS_LayoutStatus metrics_status;
+    ASS_LayoutRequest metrics_limits;
+    size_t metrics_events;
+    size_t metrics_text_bytes;
+    size_t metrics_clusters;
+    size_t metrics_outlines;
+    size_t metrics_outline_points;
+    size_t metrics_bitmap_pixels;
 
     // frame-global data
     int width, height;          // screen dimensions (the whole frame from ass_set_frame_size)
@@ -353,6 +377,8 @@ typedef struct {
 } Rect;
 
 void ass_reset_render_context(RenderContext *state, ASS_Style *style);
+bool ass_outline_apply_transform(ASS_Outline *outline, BitmapHashKey *k);
+void ass_free_metrics(ASS_Renderer *priv);
 void ass_frame_ref(ASS_Image *img);
 void ass_frame_unref(ASS_Image *img);
 ASS_Vector ass_layout_res(ASS_Renderer *render_priv);

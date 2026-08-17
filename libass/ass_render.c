@@ -30,11 +30,13 @@
 #endif
 
 #include "ass.h"
+#include "ass_layout.h"
 #include "ass_outline.h"
 #include "ass_render.h"
 #include "ass_parse.h"
 #include "ass_priv.h"
 #include "ass_shaper.h"
+#include "ass_utils.h"
 
 #define MAX_GLYPHS_INITIAL 1024
 #define MAX_LINES_INITIAL 64
@@ -178,6 +180,7 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     if (!render_priv)
         return;
 
+    ass_free_metrics(render_priv);
     ass_frame_unref(render_priv->images_root);
     ass_frame_unref(render_priv->prev_images_root);
 
@@ -1119,6 +1122,13 @@ init_render_context(RenderContext *state, ASS_Event *event)
 {
     ASS_Renderer *render_priv = state->renderer;
 
+    state->collect_metrics = false;
+    state->metrics_failed = false;
+    state->cluster_metrics = NULL;
+    state->cluster_metrics_tail = &state->cluster_metrics;
+    state->current_cluster_metrics = NULL;
+    state->current_cluster_outline_tail = NULL;
+
     state->event = event;
     state->parsed_tags = 0;
     state->evt_type = EVENT_NORMAL;
@@ -1373,6 +1383,74 @@ static void calc_transform_matrix(RenderContext *state,
     }
 }
 
+static void metrics_fail(RenderContext *state, ASS_LayoutStatus status)
+{
+    state->metrics_failed = true;
+    if (state->renderer->metrics_status == ASS_LAYOUT_OK)
+        state->renderer->metrics_status = status;
+}
+
+static bool metrics_reserve(RenderContext *state, size_t *used,
+                            size_t amount, size_t limit)
+{
+    if (state->metrics_failed ||
+        state->renderer->metrics_status != ASS_LAYOUT_OK) {
+        state->metrics_failed = true;
+        return false;
+    }
+    if (amount > SIZE_MAX - *used || (limit && amount > limit - FFMIN(*used, limit))) {
+        metrics_fail(state, ASS_LAYOUT_LIMIT_EXCEEDED);
+        return false;
+    }
+    *used += amount;
+    return true;
+}
+
+static void metrics_append_outline(RenderContext *state,
+                                   BitmapHashKey *key, ASS_Vector *shift,
+                                   ASS_DVector origin)
+{
+    if (!state->collect_metrics || state->metrics_failed ||
+        !(state->renderer->metrics_limits.flags & ASS_LAYOUT_INCLUDE_OUTLINES) ||
+        !state->current_cluster_outline_tail)
+        return;
+
+    ASS_Renderer *renderer = state->renderer;
+    size_t points = key->outline->outline[0].n_points;
+    if (!metrics_reserve(state, &renderer->metrics_outlines, 1,
+                         renderer->metrics_limits.max_outlines) ||
+        !metrics_reserve(state, &renderer->metrics_outline_points, points,
+                         renderer->metrics_limits.max_outline_points))
+        return;
+
+    ASS_LayoutOutline *result = calloc(1, sizeof(*result));
+    if (!result) {
+        metrics_fail(state, ASS_LAYOUT_ALLOCATION_FAILED);
+        return;
+    }
+    *state->current_cluster_outline_tail = result;
+    state->current_cluster_outline_tail = &result->next;
+    result->struct_size = sizeof(*result);
+
+    ASS_Outline outline[2];
+    if (!ass_outline_apply_transform(outline, key)) {
+        ass_outline_free(&outline[0]);
+        ass_outline_free(&outline[1]);
+        metrics_fail(state, ASS_LAYOUT_ALLOCATION_FAILED);
+        return;
+    }
+    if (!ass_metric_outline_copy(result, &outline[0]))
+        metrics_fail(state, ASS_LAYOUT_ALLOCATION_FAILED);
+
+    ass_outline_free(&outline[0]);
+    ass_outline_free(&outline[1]);
+
+    for (size_t i = 0; i < result->point_count; i++) {
+        result->points[i].x += shift->x - origin.x;
+        result->points[i].y += shift->y - origin.y;
+    }
+}
+
 /**
  * \brief Get bitmaps for a glyph
  * \param info glyph info
@@ -1409,6 +1487,11 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     key.outline = info->outline;
     if (!quantize_transform(m, pos, offset, first, &key))
         return;
+
+    if (state->collect_metrics && !state->metrics_failed &&
+        state->current_cluster_metrics)
+        metrics_append_outline(state, &key, pos,
+                               state->current_cluster_metrics->pos);
 
     info->bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
     if (!info->bm || !info->bm->buffer)
@@ -1547,25 +1630,32 @@ static inline size_t outline_size(const ASS_Outline* outline)
     return sizeof(ASS_Vector) * outline->n_points + outline->n_segments;
 }
 
+bool ass_outline_apply_transform(ASS_Outline *outline, BitmapHashKey *k)
+{
+    double m[3][3];
+    restore_transform(m, k);
+
+    bool first, second;
+    if (k->matrix_z.x || k->matrix_z.y) {
+        first = ass_outline_transform_3d(&outline[0], &k->outline->outline[0], m);
+        second = ass_outline_transform_3d(&outline[1], &k->outline->outline[1], m);
+    } else {
+        first = ass_outline_transform_2d(&outline[0], &k->outline->outline[0], m);
+        second = ass_outline_transform_2d(&outline[1], &k->outline->outline[1], m);
+    }
+    return first && second;
+}
+
 size_t ass_bitmap_construct(void *key, void *value, void *priv)
 {
     RenderContext *state = priv;
     BitmapHashKey *k = key;
     Bitmap *bm = value;
 
-    double m[3][3];
-    restore_transform(m, k);
-
     ASS_Outline outline[2];
-    if (k->matrix_z.x || k->matrix_z.y) {
-        ass_outline_transform_3d(&outline[0], &k->outline->outline[0], m);
-        ass_outline_transform_3d(&outline[1], &k->outline->outline[1], m);
-    } else {
-        ass_outline_transform_2d(&outline[0], &k->outline->outline[0], m);
-        ass_outline_transform_2d(&outline[1], &k->outline->outline[1], m);
-    }
-
-    if (!ass_outline_to_bitmap(state, bm, &outline[0], &outline[1]))
+    bool transformed = ass_outline_apply_transform(outline, k);
+    if (!transformed ||
+        !ass_outline_to_bitmap(state, bm, &outline[0], &outline[1]))
         memset(bm, 0, sizeof(*bm));
     ass_outline_free(&outline[0]);
     ass_outline_free(&outline[1]);
@@ -1903,10 +1993,10 @@ static void
 wrap_lines_smart(RenderContext *state, double max_text_width)
 {
     char *unibrks = NULL;
+    TextInfo *text_info = &state->text_info;
 
 #ifdef CONFIG_UNIBREAK
     ASS_Renderer *render_priv = state->renderer;
-    TextInfo *text_info = &state->text_info;
     if (render_priv->track->parser_priv->feature_flags & FEATURE_MASK(ASS_FEATURE_WRAP_UNICODE)) {
         unibrks = text_info->breaks;
         set_linebreaks_utf32(
@@ -1928,6 +2018,13 @@ wrap_lines_smart(RenderContext *state, double max_text_width)
 
     wrap_lines_naive(state, max_text_width, unibrks);
     wrap_lines_rebalance(state, max_text_width, unibrks);
+
+    int line = 0;
+    for (int i = 0; i < text_info->length; i++) {
+        if (text_info->glyphs[i].linebreak)
+            line++;
+        text_info->glyphs[i].line = line;
+    }
 
     trim_whitespace(state);
     measure_text(state);
@@ -2109,6 +2206,9 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
 
         // Clear current GlyphInfo
         memset(info, 0, sizeof(GlyphInfo));
+        info->cluster_start = text_info->length;
+        info->cluster_end = text_info->length + 1;
+        info->cluster_root = true;
 
         // Parse drawing
         if (drawing_text.str) {
@@ -2119,6 +2219,7 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
 
         // Fill glyph information
         info->symbol = code;
+        info->original_symbol = code;
         info->font = state->font;
         for (int i = 0; i < 4; i++)
             info->c[i] = state->c[i];
@@ -2444,6 +2545,47 @@ static double restore_blur(int qblur)
     return sigma * sigma;
 }
 
+static ASS_LayoutUnit *append_cluster_metrics(RenderContext *state,
+                                               GlyphInfo *info,
+                                               double device_x,
+                                               double device_y)
+{
+    if (!state->collect_metrics || state->metrics_failed || !info->cluster_root)
+        return NULL;
+
+    ASS_Renderer *renderer = state->renderer;
+    if (!metrics_reserve(state, &renderer->metrics_clusters, 1,
+                         renderer->metrics_limits.max_units))
+        return NULL;
+
+    ASS_LayoutUnit *cluster = calloc(1, sizeof(*cluster));
+    if (!cluster) {
+        metrics_fail(state, ASS_LAYOUT_ALLOCATION_FAILED);
+        return NULL;
+    }
+
+    cluster->struct_size = sizeof(*cluster);
+    cluster->text_start = info->cluster_start;
+    cluster->text_end = info->cluster_end;
+    cluster->line = info->line;
+    cluster->pos.x = device_x + d6_to_double(info->pos.x) * state->renderer->par_scale_x;
+    cluster->pos.y = device_y + d6_to_double(info->pos.y);
+    cluster->advance.x = d6_to_double(info->cluster_advance.x) *
+                         state->renderer->par_scale_x;
+    cluster->advance.y = d6_to_double(info->cluster_advance.y);
+    cluster->asc = d6_to_double(info->asc);
+    cluster->desc = d6_to_double(info->desc);
+    double end_x = cluster->pos.x + cluster->advance.x;
+    cluster->logical_bounds.x = FFMIN(cluster->pos.x, end_x);
+    cluster->logical_bounds.y = cluster->pos.y - cluster->asc;
+    cluster->logical_bounds.w = fabs(cluster->advance.x);
+    cluster->logical_bounds.h = cluster->asc + cluster->desc;
+
+    *state->cluster_metrics_tail = cluster;
+    state->cluster_metrics_tail = &cluster->next;
+    return cluster;
+}
+
 // Convert glyphs to bitmaps, combine them, apply blur, generate shadows.
 static void render_and_combine_glyphs(RenderContext *state,
                                       double device_x, double device_y)
@@ -2459,6 +2601,10 @@ static void render_and_combine_glyphs(RenderContext *state,
     ASS_DVector offset;
     for (int i = 0; i < text_info->length; i++) {
         GlyphInfo *info = text_info->glyphs + i;
+        state->current_cluster_metrics = append_cluster_metrics(
+            state, info, device_x, device_y);
+        state->current_cluster_outline_tail = state->current_cluster_metrics
+            ? &state->current_cluster_metrics->fill : NULL;
         if (info->starts_new_run) new_run = true;
         if (info->skip)
             continue;
@@ -2536,13 +2682,15 @@ static void render_and_combine_glyphs(RenderContext *state,
                 current_info->max_bitmap_count = MAX_SUB_BITMAPS_INITIAL;
 
                 nb_bitmaps++;
-                new_run = false;
             }
             assert(current_info);
 
             ASS_Vector pos, pos_o;
             info->pos.x = double_to_d6(device_x + d6_to_double(info->pos.x) * render_priv->par_scale_x);
             info->pos.y = double_to_d6(device_y) + info->pos.y;
+
+            new_run = false;
+
             get_bitmap_glyph(state, info, &current_info->leftmost_x, &pos, &pos_o,
                              &offset, !current_info->bitmap_count, flags);
 
@@ -2790,15 +2938,72 @@ static void add_background(RenderContext *state, EventImages *event_images)
     }
 }
 
+static bool finalize_metrics_text(RenderContext *state, ASS_LayoutEvent *metrics)
+{
+    TextInfo *text_info = &state->text_info;
+    size_t count = text_info->length;
+    if (count > (SIZE_MAX - 1) / 4) {
+        metrics_fail(state, ASS_LAYOUT_LIMIT_EXCEEDED);
+        return false;
+    }
+
+    size_t length = 0;
+    for (size_t i = 0; i < count; i++) {
+        char encoded[4];
+        length += ass_utf8_put_char(encoded, text_info->glyphs[i].original_symbol);
+    }
+    ASS_Renderer *renderer = state->renderer;
+    if (!metrics_reserve(state, &renderer->metrics_text_bytes, length,
+                         renderer->metrics_limits.max_text_bytes))
+        return false;
+
+    size_t *byte_offsets = calloc(count + 1, sizeof(*byte_offsets));
+    char *text = malloc(length + 1);
+    if (!byte_offsets || !text) {
+        free(byte_offsets);
+        free(text);
+        metrics_fail(state, ASS_LAYOUT_ALLOCATION_FAILED);
+        return false;
+    }
+
+    length = 0;
+    for (size_t i = 0; i < count; i++) {
+        byte_offsets[i] = length;
+        length += ass_utf8_put_char(text + length,
+                                    text_info->glyphs[i].original_symbol);
+    }
+    byte_offsets[count] = length;
+    text[length] = '\0';
+
+    for (ASS_LayoutUnit *cluster = metrics->units;
+         cluster; cluster = cluster->next) {
+        if (cluster->text_start > cluster->text_end ||
+            cluster->text_end > count) {
+            free(byte_offsets);
+            free(text);
+            metrics_fail(state, ASS_LAYOUT_FAILED);
+            return false;
+        }
+        cluster->text_start = byte_offsets[cluster->text_start];
+        cluster->text_end = byte_offsets[cluster->text_end];
+    }
+
+    free(byte_offsets);
+    metrics->text = text;
+    metrics->text_length = length;
+    return true;
+}
+
 /**
  * \brief Main ass rendering function, glues everything together
  * \param event event to render
  * \param event_images struct containing resulting images, will also be initialized
+ * \param whether to collect metrics
  * Process event, appending resulting ASS_Image's to images_root.
  */
 static bool
 ass_render_event(RenderContext *state, ASS_Event *event,
-                 EventImages *event_images)
+                 EventImages *event_images, bool collect_metrics)
 {
     ASS_Renderer *render_priv = state->renderer;
     if (event->Style >= render_priv->track->n_styles) {
@@ -2812,6 +3017,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     free_render_context(state);
     init_render_context(state, event);
+    state->collect_metrics = collect_metrics;
 
     if (!parse_events(state, event))
         return false;
@@ -3007,6 +3213,18 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     event_images->event = event;
     event_images->imgs = render_text(state);
 
+    if (collect_metrics) {
+        event_images->metrics.struct_size = sizeof(event_images->metrics);
+        event_images->metrics.start_ms = event->Start;
+        event_images->metrics.duration_ms = event->Duration;
+        event_images->metrics.has_duration = 1;
+        event_images->metrics.units = state->cluster_metrics;
+        if (!finalize_metrics_text(state, &event_images->metrics)) {
+            event_images->metrics.text = NULL;
+            event_images->metrics.text_length = 0;
+        }
+    }
+
     if (state->border_style == 4)
         add_background(state, event_images);
 
@@ -3166,6 +3384,46 @@ shift_event(ASS_Renderer *render_priv, EventImages *ei, int shift)
         cur = cur->next;
     }
     ei->top += shift;
+
+    ASS_LayoutUnit *cluster = ei->metrics.units;
+    while (cluster) {
+        cluster->pos.y += shift;
+        cluster->logical_bounds.y += shift;
+        cluster = cluster->next;
+    }
+}
+
+static void set_event_bitmap_bounds(ASS_Renderer *renderer,
+                                    EventImages *event_images)
+{
+    ASS_LayoutEvent *metrics = &event_images->metrics;
+    int left = INT_MAX, top = INT_MAX, right = INT_MIN, bottom = INT_MIN;
+
+    for (ASS_Image *image = event_images->imgs; image; image = image->next) {
+        if (image->w <= 0 || image->h <= 0 || !image->bitmap ||
+            (image->color & 0xff) == 0xff)
+            continue;
+        if ((size_t) image->w > SIZE_MAX / (size_t) image->h) {
+            metrics_fail(&renderer->state, ASS_LAYOUT_LIMIT_EXCEEDED);
+            return;
+        }
+        size_t pixels = (size_t) image->w * (size_t) image->h;
+        if (!metrics_reserve(&renderer->state, &renderer->metrics_bitmap_pixels,
+                             pixels, renderer->metrics_limits.max_bitmap_pixels))
+            return;
+        left = FFMIN(left, image->dst_x);
+        top = FFMIN(top, image->dst_y);
+        right = FFMAX(right, image->dst_x + image->w);
+        bottom = FFMAX(bottom, image->dst_y + image->h);
+    }
+
+    if (left == INT_MAX)
+        return;
+    metrics->bitmap_bounds.x = left;
+    metrics->bitmap_bounds.y = top;
+    metrics->bitmap_bounds.w = right - left;
+    metrics->bitmap_bounds.h = bottom - top;
+    metrics->has_bitmap_bounds = 1;
 }
 
 // dir: 1 - move down
@@ -3360,7 +3618,7 @@ static ASS_Image *ass_free_image(ASS_Image *img) {
 }
 
 /**
- * \brief render a frame
+ * \brief render a frame or collect metrics
  * \param priv library handle
  * \param track track
  * \param now current video timestamp (ms)
@@ -3379,21 +3637,78 @@ static ASS_RenderStatus render_start_status(ASS_Renderer *priv,
     return ASS_RENDER_OK;
 }
 
-static ASS_Image *ass_render_frame_internal(ASS_Renderer *priv,
-                                            ASS_Track *track,
-                                            long long now,
-                                            int *detect_change,
-                                            ASS_RenderStatus *status)
+#define FIELD_END(type, field) \
+    (offsetof(type, field) + sizeof(((type *) 0)->field))
+
+static void configure_layout_request(ASS_Renderer *priv,
+                                     const ASS_LayoutRequest *request)
 {
-    // init frame
-    if (!ass_start_frame(priv, track, now)) {
-        *status = render_start_status(priv, track);
-        if (detect_change)
-            *detect_change = 2;
-        return NULL;
+    priv->metrics_status = ASS_LAYOUT_INVALID_REQUEST;
+    if (!request || request->struct_size < FIELD_END(ASS_LayoutRequest, flags))
+        return;
+    if (request->flags & ~(ASS_LAYOUT_INCLUDE_OUTLINES | ASS_LAYOUT_UNBOUNDED))
+        return;
+
+    if (request->flags & ASS_LAYOUT_UNBOUNDED) {
+        priv->metrics_limits = (ASS_LayoutRequest) {
+            .struct_size = sizeof(priv->metrics_limits),
+            .flags = request->flags,
+            .max_events = SIZE_MAX,
+            .max_text_bytes = SIZE_MAX,
+            .max_units = SIZE_MAX,
+            .max_outlines = SIZE_MAX,
+            .max_outline_points = SIZE_MAX,
+            .max_bitmap_pixels = SIZE_MAX,
+        };
+        priv->metrics_status = ASS_LAYOUT_OK;
+        return;
     }
 
-    *status = ASS_RENDER_OK;
+    if (request->struct_size < FIELD_END(ASS_LayoutRequest, max_bitmap_pixels) ||
+        !request->max_events || !request->max_text_bytes ||
+        !request->max_units || !request->max_bitmap_pixels ||
+        ((request->flags & ASS_LAYOUT_INCLUDE_OUTLINES) &&
+         (!request->max_outlines || !request->max_outline_points)))
+        return;
+
+    priv->metrics_limits = *request;
+    priv->metrics_status = ASS_LAYOUT_OK;
+}
+
+static int ass_render_frame_internal(ASS_Renderer *priv, ASS_Track *track,
+                                     long long now, int *detect_change,
+                                     ASS_RenderStatus *render_status,
+                                     bool collect_metrics,
+                                     const ASS_LayoutRequest *limits)
+{
+    ass_free_metrics(priv);
+
+    memset(&priv->metrics_limits, 0, sizeof(priv->metrics_limits));
+    priv->metrics_status = collect_metrics ? ASS_LAYOUT_INVALID_REQUEST
+                                           : ASS_LAYOUT_NOT_REQUESTED;
+    priv->metrics_events = 0;
+    priv->metrics_text_bytes = 0;
+    priv->metrics_clusters = 0;
+    priv->metrics_outlines = 0;
+    priv->metrics_outline_points = 0;
+    priv->metrics_bitmap_pixels = 0;
+    if (collect_metrics)
+        configure_layout_request(priv, limits);
+
+    // init frame
+    if (!ass_start_frame(priv, track, now)) {
+        *render_status = render_start_status(priv, track);
+        if (collect_metrics && priv->metrics_status == ASS_LAYOUT_OK) {
+            priv->metrics_status = *render_status == ASS_RENDER_OK
+                                 ? ASS_LAYOUT_EMPTY
+                                 : ASS_LAYOUT_INVALID_REQUEST;
+        }
+        if (detect_change)
+            *detect_change = 2;
+        return -1;
+    }
+
+    *render_status = ASS_RENDER_OK;
 
     // render events separately
     int cnt = 0;
@@ -3407,8 +3722,21 @@ static ASS_Image *ass_render_frame_internal(ASS_Renderer *priv,
                     realloc(priv->eimg,
                             priv->eimg_size * sizeof(EventImages));
             }
-            if (ass_render_event(&priv->state, event, priv->eimg + cnt))
+            memset(priv->eimg + cnt, 0, sizeof(*priv->eimg));
+            bool at_event_limit = collect_metrics &&
+                priv->metrics_status == ASS_LAYOUT_OK &&
+                priv->metrics_limits.max_events &&
+                priv->metrics_events >= priv->metrics_limits.max_events;
+            bool collect_event = collect_metrics &&
+                priv->metrics_status == ASS_LAYOUT_OK && !at_event_limit;
+            if (ass_render_event(&priv->state, event, priv->eimg + cnt,
+                                 collect_event)) {
+                if (collect_event)
+                    priv->metrics_events++;
+                else if (at_event_limit)
+                    priv->metrics_status = ASS_LAYOUT_LIMIT_EXCEEDED;
                 cnt++;
+            }
         }
     }
 
@@ -3425,6 +3753,11 @@ static ASS_Image *ass_render_frame_internal(ASS_Renderer *priv,
         }
     if (cnt > 0)
         fix_collisions(priv, last, priv->eimg + cnt - last);
+
+    if (collect_metrics) {
+        for (int i = 0; i < cnt; i++)
+            set_event_bitmap_bounds(priv, &priv->eimg[i]);
+    }
 
     // concat lists, removing fully transparent bitmaps
     ASS_Image **tail = &priv->images_root;
@@ -3457,18 +3790,85 @@ static ASS_Image *ass_render_frame_internal(ASS_Renderer *priv,
     if (track->parser_priv->prune_delay >= 0)
         ass_prune_events(track, now - track->parser_priv->prune_delay);
 
-    return priv->images_root;
+    priv->metrics_count = collect_metrics ? cnt : 0;
+    if (collect_metrics && priv->metrics_status != ASS_LAYOUT_OK)
+        ass_free_metrics(priv);
+    else if (collect_metrics && cnt == 0)
+        priv->metrics_status = ASS_LAYOUT_EMPTY;
+
+    return cnt;
 }
 
+/**
+ * \brief render a frame
+ * \param priv library handle
+ * \param track track
+ * \param now current video timestamp (ms)
+ * \param detect_change a value describing how the new images differ from the previous ones will be written here:
+ *        0 if identical, 1 if different positions, 2 if different content.
+ *        Can be NULL, in that case no detection is performed.
+ */
 ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                             long long now, int *detect_change)
 {
     ASS_RenderStatus status;
-    return ass_render_frame_internal(priv, track, now, detect_change, &status);
+    int cnt = ass_render_frame_internal(priv, track, now, detect_change,
+                                        &status, false, NULL);
+    return cnt >= 0 ? priv->images_root : NULL;
 }
 
-#define FIELD_END(type, field) \
-    (offsetof(type, field) + sizeof(((type *) 0)->field))
+static ASS_Layout *link_layout(ASS_Renderer *priv, int count)
+{
+    if (count <= 0)
+        return NULL;
+
+    for (int i = 0; i < count - 1; i++)
+        priv->eimg[i].metrics.next = &priv->eimg[i + 1].metrics;
+    priv->eimg[count - 1].metrics.next = NULL;
+    priv->layout = (ASS_Layout) {
+        .struct_size = sizeof(priv->layout),
+        .unit_mode = priv->settings.shaper == ASS_SHAPING_SIMPLE
+                   ? ASS_LAYOUT_UNIT_SIMPLE_SCALAR
+                   : ASS_LAYOUT_UNIT_SHAPING_CLUSTER,
+        .events = &priv->eimg[0].metrics,
+    };
+    return &priv->layout;
+}
+
+/**
+ * \brief Free an ASS_LayoutOutline's memory as well as all the
+ * memory of all ASS_LayoutOutlines following it.
+ */
+void ass_free_metrics_outlines(ASS_LayoutOutline *outline)
+{
+    while (outline) {
+        ASS_LayoutOutline *next = outline->next;
+        ass_metric_outline_free(outline);
+        free(outline);
+        outline = next;
+    }
+}
+
+/**
+ * \brief Free all memory that was allocated for metrics.
+ */
+void ass_free_metrics(ASS_Renderer *priv)
+{
+    memset(&priv->layout, 0, sizeof(priv->layout));
+    for (int i = 0; i < priv->metrics_count; i++) {
+        ASS_LayoutEvent *metrics = &priv->eimg[i].metrics;
+        free(metrics->text);
+        ASS_LayoutUnit *cluster = metrics->units;
+        while (cluster) {
+            ass_free_metrics_outlines(cluster->fill);
+            ASS_LayoutUnit *next = cluster->next;
+            free(cluster);
+            cluster = next;
+        }
+        memset(metrics, 0, sizeof(*metrics));
+    }
+    priv->metrics_count = 0;
+}
 
 int ass_render_frame2(ASS_Renderer *renderer,
                       const ASS_RenderRequest *request,
@@ -3508,13 +3908,28 @@ int ass_render_frame2(ASS_Renderer *renderer,
         return -1;
     }
 
+    const ASS_LayoutRequest *layout_request =
+        request->struct_size >= FIELD_END(ASS_RenderRequest, layout)
+        ? request->layout : NULL;
+    if (layout_request &&
+        capacity < FIELD_END(ASS_RenderResult, layout_status)) {
+        result->status = ASS_RENDER_INVALID_REQUEST;
+        return -1;
+    }
+
     int change = -1;
-    result->images = ass_render_frame_internal(
+    int count = ass_render_frame_internal(
         renderer, request->track, request->now_ms,
         flags & ASS_RENDER_DETECT_CHANGE ? &change : NULL,
-        &result->status);
+        &result->status, layout_request != NULL, layout_request);
+    result->images = count >= 0 ? renderer->images_root : NULL;
     if (capacity >= FIELD_END(ASS_RenderResult, change))
         result->change = change;
+    if (layout_request) {
+        result->layout_status = renderer->metrics_status;
+        result->layout = count >= 0 && renderer->metrics_status == ASS_LAYOUT_OK
+                       ? link_layout(renderer, count) : NULL;
+    }
     return 0;
 }
 

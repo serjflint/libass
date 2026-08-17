@@ -21,3 +21,16 @@ render_api_test = executable(
 )
 
 test('render api', render_api_test)
+
+if fontconfig
+    subtitle_layout_test = executable(
+        'subtitle_layout_test',
+        'subtitle_layout.c',
+        install: false,
+        include_directories: incs,
+        dependencies: deps,
+        link_with: libass_for_tools,
+    )
+
+    test('subtitle-layout', subtitle_layout_test)
+endif

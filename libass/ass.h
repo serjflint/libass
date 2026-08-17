@@ -613,6 +613,9 @@ void ass_set_cache_limits(ASS_Renderer *priv, int glyph_max,
  * \param now video timestamp in milliseconds
  * \param detect_change compare to the previous call and set to 1
  * if positions may have changed, or set to 2 if content may have changed.
+ *
+ * The returned ASS_Images live until the next rendering call on the same
+ * renderer or ass_renderer_done().
  */
 ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                             long long now, int *detect_change);
@@ -626,6 +629,19 @@ typedef enum ass_render_status {
     ASS_RENDER_INVALID_REQUEST,
     ASS_RENDER_NOT_READY,
 } ASS_RenderStatus;
+
+typedef enum ass_layout_status {
+    ASS_LAYOUT_NOT_REQUESTED = 0,
+    ASS_LAYOUT_OK,
+    ASS_LAYOUT_EMPTY,
+    ASS_LAYOUT_LIMIT_EXCEEDED,
+    ASS_LAYOUT_ALLOCATION_FAILED,
+    ASS_LAYOUT_FAILED,
+    ASS_LAYOUT_INVALID_REQUEST,
+} ASS_LayoutStatus;
+
+typedef struct ass_layout_request ASS_LayoutRequest;
+typedef struct ass_layout ASS_Layout;
 
 enum {
     /** Compute the same change classification as ass_render_frame(). */
@@ -645,7 +661,7 @@ typedef struct ass_render_request {
     ASS_Track *track;
     long long now_ms;
     unsigned flags;
-    // New optional inputs can be appended here.
+    const ASS_LayoutRequest *layout;
 } ASS_RenderRequest;
 
 /**
@@ -664,7 +680,8 @@ typedef struct ass_render_result {
     ASS_RenderStatus status;
     ASS_Image *images;
     int change;  // -1 unless ASS_RENDER_DETECT_CHANGE was requested
-    // New optional outputs can be appended here.
+    const ASS_Layout *layout;
+    ASS_LayoutStatus layout_status;
 } ASS_RenderResult;
 
 /**
