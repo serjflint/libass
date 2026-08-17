@@ -8,3 +8,16 @@ libass_test = executable(
     dependencies: deps + png_deps,
     link_with: libass_for_tools,
 )
+
+render_api_test = executable(
+    'render_api_test',
+    'render_api.c',
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+    c_args: ['-DASS_TEST_FONT="' + join_paths(meson.project_source_root(),
+                                              'compare/test/font1.ttf') + '"'],
+)
+
+test('render api', render_api_test)

@@ -24,7 +24,7 @@
 #include <stdarg.h>
 #include "ass_types.h"
 
-#define LIBASS_VERSION 0x01705000
+#define LIBASS_VERSION 0x01705010
 
 #ifdef __cplusplus
 extern "C" {
@@ -616,6 +616,67 @@ void ass_set_cache_limits(ASS_Renderer *priv, int glyph_max,
  */
 ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                             long long now, int *detect_change);
+
+/**
+ * Status of an ass_render_frame2() render operation.  This is independent
+ * from statuses of optional outputs added to ASS_RenderResult.
+ */
+typedef enum ass_render_status {
+    ASS_RENDER_OK = 0,
+    ASS_RENDER_INVALID_REQUEST,
+    ASS_RENDER_NOT_READY,
+} ASS_RenderStatus;
+
+enum {
+    /** Compute the same change classification as ass_render_frame(). */
+    ASS_RENDER_DETECT_CHANGE = 1u << 0,
+};
+
+/**
+ * Inputs for ass_render_frame2().
+ *
+ * Initialize the complete structure to zero, set struct_size to sizeof the
+ * structure known to the caller, then populate the desired fields.  Missing
+ * tail fields have zero/default behavior.  Larger structures are accepted;
+ * unknown tail bytes are ignored.
+ */
+typedef struct ass_render_request {
+    size_t struct_size;
+    ASS_Track *track;
+    long long now_ms;
+    unsigned flags;
+    // New optional inputs can be appended here.
+} ASS_RenderRequest;
+
+/**
+ * Outputs from ass_render_frame2().
+ *
+ * Initialize the complete structure to zero and pass writable capacity in
+ * struct_size.  On return, struct_size contains the size of the result record
+ * known to the runtime library.  A field may be read only if both the original
+ * caller capacity and the returned runtime size cover the complete field.
+ *
+ * The structure itself is caller-owned.  images is owned by the renderer and
+ * has the same lifetime as the result of ass_render_frame().
+ */
+typedef struct ass_render_result {
+    size_t struct_size;
+    ASS_RenderStatus status;
+    ASS_Image *images;
+    int change;  // -1 unless ASS_RENDER_DETECT_CHANGE was requested
+    // New optional outputs can be appended here.
+} ASS_RenderResult;
+
+/**
+ * Render a frame through the extensible request/result interface.
+ *
+ * Returns 0 after populating result.  Returns -1 if request or result is NULL
+ * or shorter than the documented minimum prefix.  Unknown flag bits produce
+ * ASS_RENDER_INVALID_REQUEST without rendering.
+ */
+int ass_render_frame2(ASS_Renderer *renderer,
+                      const ASS_RenderRequest *request,
+                      ASS_RenderResult *result);
 
 
 /*
