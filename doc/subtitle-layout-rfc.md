@@ -7,7 +7,36 @@ Related discussion:
 - [Text to shape / text metrics API, issue #825](https://github.com/libass/libass/issues/825)
 - [Metrics and shape data proof of concept, pull request #856](https://github.com/libass/libass/pull/856)
 - [RGBA output API, issue #73](https://github.com/libass/libass/issues/73)
+- [Word at a given position, discussion #869](https://github.com/libass/libass/discussions/869)
+- [Subtitle word under the mouse, mpv discussion #15907](https://github.com/mpv-player/mpv/discussions/15907)
 - [Implementation draft](https://github.com/serjflint/libass/pull/1)
+
+## Prior art and attribution
+
+Almost nothing here is original to this proposal. It assembles existing work and existing requests:
+
+- **The metrics API concept** is @arch1t3cht's, from issue #825. The granularity constraints it respects
+  — that glyphs, glyph clusters, and code points are different things, and that a caller cannot map
+  glyphs back to source characters — are @astiob's objections in that thread, not conclusions reached
+  here.
+- **Half-open UTF-8 cluster ranges** are @rcombs' proposal in #825 and #869: use `hb_glyph_info_t.cluster`
+  as an index into the event text and expose the span from one cluster index to the next. This document
+  specifies that idea; it did not invent it.
+- **The collection implementation** in the accompanying PoC is derived from @arch1t3cht's PR #856. The
+  rebase onto current `master` did not preserve his commit authorship, which is a defect in the branch,
+  not a claim about the code's origin. It will be corrected before any upstream submission; the
+  `ass_get_metrics` public surface is superseded here while the collection internals are his.
+- **Images and layout from the same render call** was raised in
+  [#856 (comment)](https://github.com/libass/libass/pull/856#issuecomment-2527273159), not here.
+- **The centralized `ass_render_frame2` request/result entry point** is @rcombs' suggestion on the
+  implementation draft. The name itself appears in @wm4's issue #73.
+- **The use case** was requested by @BLumia in mpv discussion #15907 and libass discussion #869, before
+  this consumer existed; @guidocella established there that mpv could not answer it without libass, and
+  @arch1t3cht linked #869 back into #825 as motivation. The demand is pre-existing and independent of
+  any one downstream project.
+
+This work used AI-assisted research and drafting. The design and implementation were reviewed by a
+human, who is responsible for the proposal and its follow-up.
 
 ## Decision requested
 
