@@ -161,6 +161,27 @@ int main(void)
     assert(!field_available(&older_runtime, FIELD_END(ASS_RenderResult, change)));
     assert(field_available(result, FIELD_END(ASS_RenderResult, layout_status)));
 
+    /*
+     * An old caller compiled a shorter ASS_RenderResult. Reading only its own
+     * prefix out of a longer runtime record must still give correct values.
+     */
+    struct old_result {
+        size_t struct_size;
+        ASS_RenderStatus status;
+        ASS_Image *images;
+        int change;
+    };
+    request = request_for(track, ASS_RENDER_DETECT_CHANGE);
+    result = ass_render_frame2(new_api_renderer, &request);
+    assert(result);
+    assert(result->struct_size > FIELD_END(struct old_result, change));
+    struct old_result truncated;
+    memcpy(&truncated, result, FIELD_END(struct old_result, change));
+    assert(truncated.struct_size == result->struct_size);
+    assert(truncated.status == result->status);
+    assert(truncated.images == result->images);
+    assert(truncated.change == result->change);
+
     /* A retained pointer never shows the previous frame after a failed call. */
     request = request_for(track, 0);
     result = ass_render_frame2(new_api_renderer, &request);
