@@ -26,7 +26,8 @@ EXTRA_DIST += gen_defs.py meson_options.txt meson.build \
               fuzz/meson.build checkasm/meson.build \
               compare/meson.build \
               profile/meson.build test/meson.build \
-              test/render_api.c test/subtitle_layout.c \
+              test/render_api.c test/render_lifetime.c \
+              test/subtitle_layout.c \
               compare/test/font1.ttf
 
 pkgconfigdir = $(libdir)/pkgconfig
@@ -52,6 +53,14 @@ test_render_api_CPPFLAGS = $(AM_CPPFLAGS) \
     -DASS_TEST_FONT='"$(abs_top_srcdir)/compare/test/font1.ttf"'
 test_render_api_LDADD = libass/libass.la
 test_render_api_LDFLAGS = $(AM_LDFLAGS) -static
+
+check_PROGRAMS += test/render-lifetime
+TESTS += test/render-lifetime$(EXEEXT)
+test_render_lifetime_SOURCES = test/render_lifetime.c
+test_render_lifetime_CPPFLAGS = $(AM_CPPFLAGS) \
+    -DASS_TEST_FONT='"$(abs_top_srcdir)/compare/test/font1.ttf"'
+test_render_lifetime_LDADD = libass/libass.la
+test_render_lifetime_LDFLAGS = $(AM_LDFLAGS) -static
 
 if FONTCONFIG
 check_PROGRAMS += test/subtitle-layout

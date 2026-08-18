@@ -325,11 +325,11 @@ static ASS_Image *render_bounded(ASS_Renderer *renderer, ASS_Track *track,
         .now_ms = now,
         .layout = limits,
     };
-    ASS_RenderResult result = {.struct_size = sizeof(result)};
-    assert(ass_render_frame2(renderer, &request, &result) == 0);
-    const ASS_Layout *layout = result.layout;
-    ASS_Image *images = result.images;
-    *status = result.layout_status;
+    const ASS_RenderResult *result = ass_render_frame2(renderer, &request);
+    assert(result);
+    const ASS_Layout *layout = result->layout;
+    ASS_Image *images = result->images;
+    *status = result->layout_status;
     if (layout) {
         assert(layout->struct_size == sizeof(*layout));
         assert(layout->unit_mode == ASS_LAYOUT_UNIT_SIMPLE_SCALAR ||
@@ -356,13 +356,13 @@ static ASS_Image *render_unbounded(ASS_Renderer *renderer, ASS_Track *track,
         .flags = detect_change ? ASS_RENDER_DETECT_CHANGE : 0,
         .layout = &layout_request,
     };
-    ASS_RenderResult result = {.struct_size = sizeof(result)};
-    assert(ass_render_frame2(renderer, &request, &result) == 0);
+    const ASS_RenderResult *result = ass_render_frame2(renderer, &request);
+    assert(result);
     if (detect_change)
-        *detect_change = result.change;
-    const ASS_Layout *layout = result.layout;
-    ASS_LayoutStatus status = result.layout_status;
-    ASS_Image *images = result.images;
+        *detect_change = result->change;
+    const ASS_Layout *layout = result->layout;
+    ASS_LayoutStatus status = result->layout_status;
+    ASS_Image *images = result->images;
     if (layout) {
         assert(status == ASS_LAYOUT_OK);
         assert(layout->struct_size == sizeof(*layout));

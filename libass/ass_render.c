@@ -3870,52 +3870,32 @@ void ass_free_metrics(ASS_Renderer *priv)
     priv->metrics_count = 0;
 }
 
-int ass_render_frame2(ASS_Renderer *renderer,
-                      const ASS_RenderRequest *request,
-                      ASS_RenderResult *result)
+const ASS_RenderResult *ass_render_frame2(ASS_Renderer *renderer,
+                                          const ASS_RenderRequest *request)
 {
-    if (!result)
-        return -1;
-
-    size_t capacity = result->struct_size;
-    memset(result, 0, capacity < sizeof(*result) ? capacity : sizeof(*result));
-    if (capacity >= sizeof(result->struct_size))
-        result->struct_size = sizeof(*result);
-    if (capacity < FIELD_END(ASS_RenderResult, images))
-        return -1;
-    if (capacity >= FIELD_END(ASS_RenderResult, change))
-        result->change = -1;
-
+    // No result record can exist without a renderer to own it or a request
+    // long enough to interpret.
     if (!renderer || !request ||
-        request->struct_size < FIELD_END(ASS_RenderRequest, now_ms)) {
-        result->status = ASS_RENDER_INVALID_REQUEST;
-        return -1;
-    }
+        request->struct_size < FIELD_END(ASS_RenderRequest, now_ms))
+        return NULL;
+
+    // Repopulated in full every call, so a retained pointer never shows the
+    // previous frame's images or layout.
+    ASS_RenderResult *result = &renderer->render_result;
+    memset(result, 0, sizeof(*result));
+    result->struct_size = sizeof(*result);
+    result->change = -1;
 
     unsigned flags = request->struct_size >= FIELD_END(ASS_RenderRequest, flags)
                    ? request->flags : 0;
-    if (flags & ~ASS_RENDER_DETECT_CHANGE) {
+    if ((flags & ~ASS_RENDER_DETECT_CHANGE) || !request->track) {
         result->status = ASS_RENDER_INVALID_REQUEST;
-        return 0;
-    }
-    if (!request->track) {
-        result->status = ASS_RENDER_INVALID_REQUEST;
-        return 0;
-    }
-    if ((flags & ASS_RENDER_DETECT_CHANGE) &&
-        capacity < FIELD_END(ASS_RenderResult, change)) {
-        result->status = ASS_RENDER_INVALID_REQUEST;
-        return -1;
+        return result;
     }
 
     const ASS_LayoutRequest *layout_request =
         request->struct_size >= FIELD_END(ASS_RenderRequest, layout)
         ? request->layout : NULL;
-    if (layout_request &&
-        capacity < FIELD_END(ASS_RenderResult, layout_status)) {
-        result->status = ASS_RENDER_INVALID_REQUEST;
-        return -1;
-    }
 
     int change = -1;
     int count = ass_render_frame_internal(
@@ -3923,14 +3903,13 @@ int ass_render_frame2(ASS_Renderer *renderer,
         flags & ASS_RENDER_DETECT_CHANGE ? &change : NULL,
         &result->status, layout_request != NULL, layout_request);
     result->images = count >= 0 ? renderer->images_root : NULL;
-    if (capacity >= FIELD_END(ASS_RenderResult, change))
-        result->change = change;
+    result->change = change;
     if (layout_request) {
         result->layout_status = renderer->metrics_status;
         result->layout = count >= 0 && renderer->metrics_status == ASS_LAYOUT_OK
                        ? link_layout(renderer, count) : NULL;
     }
-    return 0;
+    return result;
 }
 
 /**

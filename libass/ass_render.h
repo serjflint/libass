@@ -332,6 +332,7 @@ struct ass_renderer {
 
     ASS_Image *images_root;     // rendering result is stored here
     ASS_Image *prev_images_root;
+    ASS_RenderResult render_result;  // reused storage returned by ass_render_frame2
 
     EventImages *eimg;          // temporary buffer for sorting rendered events
     int eimg_size;              // allocated buffer size
