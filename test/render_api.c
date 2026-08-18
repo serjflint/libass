@@ -1,5 +1,8 @@
 /* Structural and compatibility tests for ass_render_frame2. */
 
+/* Every check here is an assert(); a -DNDEBUG build must not turn this
+ * program into a silent no-op. */
+#undef NDEBUG
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -80,11 +83,11 @@ static ASS_RenderRequest request_for(ASS_Track *track, unsigned flags)
     return request;
 }
 
-static ASS_RenderResult new_result(void)
+/* A caller may read a field only if its own sizeof and the runtime-reported
+ * struct_size both cover it. */
+static int field_available(const ASS_RenderResult *result, size_t field_end)
 {
-    ASS_RenderResult result = {0};
-    result.struct_size = sizeof(result);
-    return result;
+    return result->struct_size >= field_end;
 }
 
 int main(void)
@@ -105,28 +108,37 @@ int main(void)
     uint64_t legacy_hash = hash_images(legacy_images);
 
     ASS_RenderRequest request = request_for(track, ASS_RENDER_DETECT_CHANGE);
-    ASS_RenderResult result = new_result();
-    assert(ass_render_frame2(new_api_renderer, &request, &result) == 0);
-    assert(result.struct_size == sizeof(result));
-    assert(result.status == ASS_RENDER_OK);
-    assert(result.images);
-    assert(result.change == legacy_change);
-    assert(hash_images(result.images) == legacy_hash);
+    const ASS_RenderResult *result =
+        ass_render_frame2(new_api_renderer, &request);
+    assert(result);
+/* The reported size is the end of the last known field, not sizeof: a field
+     * appended into the tail padding would not move sizeof, and a newer caller
+     * would then read bytes this runtime never wrote. */
+    assert(result->struct_size ==
+           FIELD_END(ASS_RenderResult, layout_status));
+    assert(result->struct_size <= sizeof(ASS_RenderResult));
+    assert(result->status == ASS_RENDER_OK);
+    assert(result->images);
+    assert(result->change == legacy_change);
+    assert(hash_images(result->images) == legacy_hash);
+
+    /* The renderer owns one record and reuses it; the caller never frees it. */
+    const ASS_RenderResult *first_result = result;
 
     request.flags = 0;
-    result = new_result();
-    assert(ass_render_frame2(new_api_renderer, &request, &result) == 0);
-    assert(result.status == ASS_RENDER_OK);
-    assert(result.change == -1);
-    assert(hash_images(result.images) == legacy_hash);
+    result = ass_render_frame2(new_api_renderer, &request);
+    assert(result == first_result);
+    assert(result->status == ASS_RENDER_OK);
+    assert(result->change == -1);
+    assert(hash_images(result->images) == legacy_hash);
 
     /* A request ending at now_ms defaults the absent flags field to zero. */
     request = request_for(track, UINT32_MAX);
     request.struct_size = FIELD_END(ASS_RenderRequest, now_ms);
-    result = new_result();
-    assert(ass_render_frame2(new_api_renderer, &request, &result) == 0);
-    assert(result.status == ASS_RENDER_OK);
-    assert(result.change == -1);
+    result = ass_render_frame2(new_api_renderer, &request);
+    assert(result);
+    assert(result->status == ASS_RENDER_OK);
+    assert(result->change == -1);
 
     struct extended_request {
         ASS_RenderRequest base;
@@ -135,88 +147,77 @@ int main(void)
     extended.base = request_for(track, 0);
     extended.base.struct_size = sizeof(extended);
     memset(extended.unknown, 0xa5, sizeof(extended.unknown));
-    result = new_result();
-    assert(ass_render_frame2(new_api_renderer, &extended.base, &result) == 0);
-    assert(result.status == ASS_RENDER_OK);
+    result = ass_render_frame2(new_api_renderer, &extended.base);
+    assert(result);
+    assert(result->status == ASS_RENDER_OK);
 
-    /* Bytes beyond caller-declared result capacity must remain untouched. */
-    size_t old_capacity = FIELD_END(ASS_RenderResult, images);
-    memset(&result, 0xa5, sizeof(result));
-    result.struct_size = old_capacity;
+    /* A newer caller against a shorter runtime record must treat the tail as
+     * absent rather than as a zero value. */
+    ASS_RenderResult older_runtime = {0};
+    older_runtime.struct_size = FIELD_END(ASS_RenderResult, images);
+    older_runtime.status = ASS_RENDER_OK;
+    older_runtime.images = legacy_images;
+    assert(field_available(&older_runtime, FIELD_END(ASS_RenderResult, images)));
+    assert(!field_available(&older_runtime, FIELD_END(ASS_RenderResult, change)));
+    assert(field_available(result, FIELD_END(ASS_RenderResult, layout_status)));
+
+    /* A retained pointer never shows the previous frame after a failed call. */
     request = request_for(track, 0);
-    assert(ass_render_frame2(new_api_renderer, &request, &result) == 0);
-    assert(result.struct_size == sizeof(result));
-    assert(result.status == ASS_RENDER_OK);
-    assert(result.images);
-    const unsigned char *raw = (const unsigned char *) &result;
-    for (size_t i = old_capacity; i < sizeof(result); i++)
-        assert(raw[i] == 0xa5);
-
-    /* A newer reader can observe that an older writer knows only a prefix. */
-    result = new_result();
-    size_t caller_capacity = result.struct_size;
-    memset(&result, 0, caller_capacity);
-    result.struct_size = old_capacity;
-    result.status = ASS_RENDER_OK;
-    result.images = legacy_images;
-    assert(caller_capacity >= FIELD_END(ASS_RenderResult, change));
-    assert(result.struct_size < FIELD_END(ASS_RenderResult, change));
-    assert(result.change == 0);
-
-    /* Reusing a successful result cannot leak pointers through an error. */
-    result = new_result();
-    request = request_for(track, 0);
-    assert(ass_render_frame2(new_api_renderer, &request, &result) == 0);
-    assert(result.images);
+    result = ass_render_frame2(new_api_renderer, &request);
+    assert(result && result->images);
     request.flags = UINT32_MAX;
-    assert(ass_render_frame2(new_api_renderer, &request, &result) == 0);
-    assert(result.status == ASS_RENDER_INVALID_REQUEST);
-    assert(!result.images);
-    assert(result.change == -1);
+    result = ass_render_frame2(new_api_renderer, &request);
+    assert(result == first_result);
+    assert(result->status == ASS_RENDER_INVALID_REQUEST);
+    assert(!result->images);
+    assert(result->change == -1);
+    assert(!result->layout);
+    assert(result->layout_status == ASS_LAYOUT_NOT_REQUESTED);
 
+    /* No record can exist when the request is unusable. */
     request = request_for(track, 0);
     request.struct_size = FIELD_END(ASS_RenderRequest, track);
-    result = new_result();
-    assert(ass_render_frame2(new_api_renderer, &request, &result) == -1);
-    assert(result.status == ASS_RENDER_INVALID_REQUEST);
-    assert(!result.images);
+    assert(ass_render_frame2(new_api_renderer, &request) == NULL);
+    request = request_for(track, 0);
+    assert(ass_render_frame2(NULL, &request) == NULL);
+    assert(ass_render_frame2(new_api_renderer, NULL) == NULL);
 
-    memset(&result, 0xa5, sizeof(result));
-    result.struct_size = FIELD_END(ASS_RenderResult, status);
-    assert(ass_render_frame2(new_api_renderer, &request, &result) == -1);
-    assert(result.struct_size == sizeof(result));
-    assert(result.status == ASS_RENDER_OK);
-    raw = (const unsigned char *) &result;
-    for (size_t i = FIELD_END(ASS_RenderResult, status); i < sizeof(result); i++)
-        assert(raw[i] == 0xa5);
+    /* A NULL track is reported in the record, not by returning NULL. */
+    request = request_for(NULL, 0);
+    result = ass_render_frame2(new_api_renderer, &request);
+    assert(result);
+    assert(result->status == ASS_RENDER_INVALID_REQUEST);
+    assert(!result->images);
 
     ASS_Renderer *unconfigured = new_renderer(library, 0);
     request = request_for(track, ASS_RENDER_DETECT_CHANGE);
-    result = new_result();
-    assert(ass_render_frame2(unconfigured, &request, &result) == 0);
-    assert(result.status == ASS_RENDER_NOT_READY);
-    assert(!result.images);
-    assert(result.change == 2);
+    result = ass_render_frame2(unconfigured, &request);
+    assert(result);
+    assert(result->status == ASS_RENDER_NOT_READY);
+    assert(!result->images);
+    assert(result->change == 2);
+    /* Each renderer owns its own record. */
+    assert(result != first_result);
 
     ASS_Track *empty = ass_new_track(library);
     assert(empty);
     request = request_for(empty, ASS_RENDER_DETECT_CHANGE);
-    result = new_result();
-    assert(ass_render_frame2(new_api_renderer, &request, &result) == 0);
-    assert(result.status == ASS_RENDER_OK);
-    assert(!result.images);
-    assert(result.change == 2);
+    result = ass_render_frame2(new_api_renderer, &request);
+    assert(result);
+    assert(result->status == ASS_RENDER_OK);
+    assert(!result->images);
+    assert(result->change == 2);
 
     /* Both entry points share invalidation/cache state without divergence. */
     request = request_for(track, 0);
-    result = new_result();
-    assert(ass_render_frame2(new_api_renderer, &request, &result) == 0);
-    uint64_t alternating_hash = hash_images(result.images);
+    result = ass_render_frame2(new_api_renderer, &request);
+    assert(result);
+    uint64_t alternating_hash = hash_images(result->images);
     assert(hash_images(ass_render_frame(new_api_renderer, track, 1000, NULL)) ==
            alternating_hash);
-    result = new_result();
-    assert(ass_render_frame2(new_api_renderer, &request, &result) == 0);
-    assert(hash_images(result.images) == alternating_hash);
+    result = ass_render_frame2(new_api_renderer, &request);
+    assert(result);
+    assert(hash_images(result->images) == alternating_hash);
 
     ass_free_track(empty);
     ass_renderer_done(unconfigured);

@@ -390,9 +390,7 @@ else
     libass_for_tools = libass
 endif
 
-if get_option('test').enabled()
-    subdir('test')
-endif
+subdir('test')
 if get_option('compare').enabled()
     subdir('compare')
 endif
