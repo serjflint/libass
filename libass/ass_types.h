@@ -305,6 +305,10 @@ typedef struct ass_track {
     // New fields can be added here in new ABI-compatible library releases.
 } ASS_Track;
 
+/**
+ * \brief A point in floating-point coordinates.  Used by layout outlines;
+ * see ass_layout.h.
+ */
 typedef struct {
     double x, y;
 } ASS_DVector;

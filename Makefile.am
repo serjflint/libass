@@ -47,6 +47,10 @@ TESTS =
 include libass/Makefile_library.am
 include Makefile_util.am
 
+# No -static here, unlike the programs in Makefile_util.am: those link the
+# always-static libass_internal.la, while these link the public libass.la and
+# must therefore resolve only against libass.sym. -static also breaks them in
+# a --disable-static build.
 check_PROGRAMS += test/render_api
 TESTS += test/render_api$(EXEEXT)
 test_render_api_SOURCES = test/render_api.c
