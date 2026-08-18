@@ -59,7 +59,10 @@ enum {
  * Segments have order 1 (line), 2 (quadratic), or 3 (cubic). Each segment
  * consumes its order in points and uses the first point of the next segment
  * as its endpoint. A contour-ending segment closes onto its contour's first
- * point.
+ * point. The orders therefore sum to point_count.
+ *
+ * A unit that draws nothing, such as a space, yields a record with
+ * point_count and segment_count both zero; callers should skip it.
  */
 typedef struct ass_layout_outline {
     size_t struct_size;

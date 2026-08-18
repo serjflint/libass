@@ -38,6 +38,19 @@ render_lifetime_test = executable(
 
 test('render lifetime', render_lifetime_test)
 
+layout_contract_test = executable(
+    'layout_contract_test',
+    'layout_contract.c',
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+    c_args: ['-DASS_TEST_FONT="' + join_paths(meson.project_source_root(),
+                                              'compare/test/font1.ttf') + '"'],
+)
+
+test('layout contract', layout_contract_test)
+
 if fontconfig
     subtitle_layout_test = executable(
         'subtitle_layout_test',
