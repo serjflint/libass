@@ -52,7 +52,7 @@ test_render_api_SOURCES = test/render_api.c
 test_render_api_CPPFLAGS = $(AM_CPPFLAGS) \
     -DASS_TEST_FONT='"$(abs_top_srcdir)/compare/test/font1.ttf"'
 test_render_api_LDADD = libass/libass.la
-test_render_api_LDFLAGS = $(AM_LDFLAGS) -static
+test_render_api_LDFLAGS = $(AM_LDFLAGS)
 
 check_PROGRAMS += test/render-lifetime
 TESTS += test/render-lifetime$(EXEEXT)
@@ -60,14 +60,14 @@ test_render_lifetime_SOURCES = test/render_lifetime.c
 test_render_lifetime_CPPFLAGS = $(AM_CPPFLAGS) \
     -DASS_TEST_FONT='"$(abs_top_srcdir)/compare/test/font1.ttf"'
 test_render_lifetime_LDADD = libass/libass.la
-test_render_lifetime_LDFLAGS = $(AM_LDFLAGS) -static
+test_render_lifetime_LDFLAGS = $(AM_LDFLAGS)
 
 if FONTCONFIG
 check_PROGRAMS += test/subtitle-layout
 TESTS += test/subtitle-layout$(EXEEXT)
 test_subtitle_layout_SOURCES = test/subtitle_layout.c
 test_subtitle_layout_LDADD = libass/libass.la
-test_subtitle_layout_LDFLAGS = $(AM_LDFLAGS) -static
+test_subtitle_layout_LDFLAGS = $(AM_LDFLAGS)
 endif
 
 # Tests
