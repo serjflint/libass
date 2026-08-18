@@ -15,21 +15,31 @@ Related discussion:
 
 Almost nothing here is original to this proposal. It assembles existing work and existing requests:
 
-- **The metrics API concept** is @arch1t3cht's, from issue #825. The granularity constraints it respects
-  — that glyphs, glyph clusters, and code points are different things, and that a caller cannot map
-  glyphs back to source characters — are @astiob's objections in that thread, not conclusions reached
-  here.
+- **A metrics API** had been discussed in libass long before this proposal; @arch1t3cht's issue #825
+  is the first concrete one, and says so itself, pointing back at #87 and #348. The granularity
+  constraints this document respects — that glyphs, glyph clusters, and code points are different
+  things, and that a caller cannot map glyphs back to source characters — are @astiob's objections in
+  that thread, not conclusions reached here. Emitting one drawing per glyph run, and the observation
+  that run boundaries matter because they affect layering, is also his.
 - **Half-open UTF-8 cluster ranges** are @rcombs' proposal in #825 and #869: use `hb_glyph_info_t.cluster`
   as an index into the event text and expose the span from one cluster index to the next. This document
   specifies that idea; it did not invent it.
 - **The collection implementation** in the accompanying PoC is derived from @arch1t3cht's PR #856. The
   rebase onto current `master` did not preserve his commit authorship, which is a defect in the branch,
   not a claim about the code's origin. It will be corrected before any upstream submission; the
-  `ass_get_metrics` public surface is superseded here while the collection internals are his.
-- **Images and layout from the same render call** was raised in
+  `ass_get_metrics` public surface is superseded here while the collection internals are his. #856's
+  per-run border outlines are not carried over; only fill geometry is exposed.
+- **The coupling argument this proposal is built on** — that metrics and rendering share caches, change
+  detection, and output lifetime, so the two pipelines should stay identical, and that logical, visual,
+  and bitmap extents are distinct kinds of measurement — is @TheOneric's review of #856. The
+  same-render entry point is the direct consequence of that review; so is exporting the new symbol.
+- **The partial-initialization defects** in #856 were found and diagnosed by @filip-hejsek while
+  implementing Aegisub's metrics API against it. Tracking how many records are initialized, rather than
+  merely allocated, is his finding.
+- **Images and layout from the same render call** was raised by @rcombs in
   [#856 (comment)](https://github.com/libass/libass/pull/856#issuecomment-2527273159), not here.
 - **The centralized `ass_render_frame2` request/result entry point** is @rcombs' suggestion on the
-  implementation draft. The name itself appears in @wm4's issue #73.
+  implementation draft. The name itself appears in wm4's issue #73.
 - **The use case** was requested by @BLumia in mpv discussion #15907 and libass discussion #869, before
   this consumer existed; @guidocella established there that mpv could not answer it without libass, and
   @arch1t3cht linked #869 back into #825 as motivation. The demand is pre-existing and independent of
@@ -363,8 +373,8 @@ array movement can invalidate or retarget that pointer before a caller safely co
 - `ASS_RENDER_NOT_READY`: required renderer state such as frame size or font selection is unavailable.
 
 The implementation must not label every existing `ass_start_frame()` failure as allocation failure.
-Envelope errors are additionally reported by the function's negative return because the result may be
-too short to carry `status`.
+A null return is reserved for the cases where no result record can exist at all; every other outcome
+carries `status`.
 
 Layout collection is atomic:
 
@@ -453,11 +463,14 @@ Rejected. They multiply with output families and make composition of optional ou
 Rejected. It duplicates work and can produce different wrapping, cache state, collision placement, or
 animation state from the images a caller displays.
 
-### Library-allocated expandable `ASS_RenderResult`
+### Caller-allocated `ASS_RenderResult`
 
-Rejected for this proposal. A newer caller can address an appended field beyond an older runtime's
-shorter allocation unless every access is guarded by runtime size. Caller-owned bounded storage makes
-the write boundary explicit and still leaves nested image/layout payloads renderer-owned.
+Rejected, after being implemented first. Passing writable capacity in `struct_size` makes the write
+boundary explicit, but the image and layout payloads reachable from the result are renderer-owned and
+size-tagged already, so the API ended up carrying two different extensibility rules at once. Both
+schemes are unsafe if a caller reads an appended field without checking runtime size, so caller
+ownership bought no guarantee the size gate does not already provide, and it added failure modes that
+existed only because the caller supplied the buffer.
 
 ### Generic typed attachments or `pNext`
 
