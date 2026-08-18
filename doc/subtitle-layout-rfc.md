@@ -16,7 +16,8 @@ and layout geometry from the same invocation that produces `ASS_Image` output?
 
 The proposal has two separable parts:
 
-1. `ass_render_frame2`, with caller-owned expandable request and result records; and
+1. `ass_render_frame2`, with a caller-owned expandable request and a renderer-owned expandable
+   result record; and
 2. an optional, bounded, renderer-owned `ASS_Layout` result.
 
 The foundation avoids a new render symbol for each future output family. The layout extension solves a
@@ -127,15 +128,14 @@ typedef struct ass_render_result {
     ASS_LayoutStatus layout_status;
 } ASS_RenderResult;
 
-int ass_render_frame2(ASS_Renderer *renderer,
-                      const ASS_RenderRequest *request,
-                      ASS_RenderResult *result);
+const ASS_RenderResult *ass_render_frame2(ASS_Renderer *renderer,
+                                          const ASS_RenderRequest *request);
 ```
 
-`ass_render_frame2` returns zero when it could read the request/result envelopes and populate a result.
-It returns a negative value when the envelopes themselves are null or shorter than their documented
-minimum prefixes. Render outcome is in `result.status`; optional layout outcome is independent in
-`result.layout_status`.
+`ass_render_frame2` returns a renderer-owned result, fully populated on every outcome. It returns
+`NULL` only when no result record can exist at all: a null renderer, a null request, or a request
+shorter than its documented minimum prefix. Render outcome is in `result->status`; optional layout
+outcome is independent in `result->layout_status`, so there is one error path rather than two.
 
 `ASS_RENDER_DETECT_CHANGE` requests the same comparison currently selected by passing a non-null
 `detect_change` pointer. Without the flag, no comparison is performed and `change` is `-1`. Unknown flag
@@ -162,19 +162,19 @@ signature stable as optional inputs grow.
 
 ### Result compatibility
 
-The caller zero-initializes `ASS_RenderResult` and supplies writable capacity in `struct_size`. The
-library first saves that capacity, clears every known result byte that fits, and then returns the size of
-the result record understood by the runtime in `result.struct_size`.
+The library owns the result record, sets `struct_size` to the size it knows, and populates every field
+within that size. The caller never writes to the record and never frees it.
 
-The library never writes another field beyond the caller's original capacity. A caller reads a field
-only when both its original capacity and the returned runtime size cover the complete field. This makes
-later append-only growth safe in both directions:
+A caller reads a field only when both `sizeof(ASS_RenderResult)` as it compiled and the returned
+`struct_size` cover the complete field. A shorter `struct_size` means the field is absent, not that its
+value is zero. This makes later append-only growth safe in both directions:
 
-- an old caller gives a new library a short buffer, so the library writes only that prefix;
-- a new caller gives an old library a larger zeroed buffer, and the old library reports its shorter
-  known size while leaving the unknown tail at zero/default.
+- an old caller against a new library ignores the tail it does not know;
+- a new caller against an old library sees the shorter reported size and treats the tail as absent.
 
-The result record is caller-owned. `images` and `layout` point to renderer-owned payloads.
+This is deliberately the same runtime-size rule the layout tree already uses for its own records, rather
+than a second extensibility contract layered on top of caller-supplied capacity. One record per renderer
+is sufficient, because the previous result is already invalid by contract once the next render starts.
 
 ## Optional layout request
 
@@ -313,9 +313,10 @@ viewport; it must not describe that intersection as exact post-clip visibility.
 
 ## Lifetime and invalidation
 
-`ASS_RenderResult` itself is caller storage. The image list and layout tree are immutable borrowed
-payloads owned by `ASS_Renderer`. Both remain valid until the next call to either rendering entry point
-on that renderer or until `ass_renderer_done()`.
+`ASS_RenderResult`, its image list, and its layout tree are all owned by `ASS_Renderer` and share one
+lifetime: they remain valid until the next call to either rendering entry point on that renderer or
+until `ass_renderer_done()`. The record is reused, so a retained pointer observes the current frame, not
+the one it was obtained for.
 
 Requesting layout therefore invalidates outputs from an earlier ordinary render, and an ordinary render
 invalidates an earlier layout. Callers needing a longer lifetime must copy before the next render call.
@@ -348,8 +349,9 @@ Layout collection is atomic:
 | `ASS_LAYOUT_FAILED` | null | preserved |
 | `ASS_LAYOUT_INVALID_REQUEST` | null | normal result when the render request itself is valid |
 
-The library clears all writable result fields on every path before populating them. Reusing a result
-record after an invalid, empty, or failed call cannot expose stale image or layout pointers.
+The library repopulates the whole result record on every path. A caller holding the returned pointer
+across an invalid, empty, or failed call therefore sees that call's outcome, never a stale image or
+layout pointer from an earlier frame.
 
 The functions use libass's existing message callback and do not write diagnostics directly to stdout or
 stderr.
@@ -473,9 +475,14 @@ selection and inspection uses.
 
 ## Questions for maintainers
 
-1. Does caller-owned request/result storage fit the intended meaning of the suggested centralized entry
-   point, or is a library-owned opaque result preferable?
+1. Is a renderer-owned, size-tagged `ASS_RenderResult *` the intended reading of the suggested
+   centralized entry point? A caller-owned result was implemented first and replaced: it required a
+   second extensibility contract (caller capacity) alongside the runtime-size rule the layout records
+   already use, and bought no safety the size gate does not already provide.
 2. Are `ass_render_frame2`, `ASS_RenderRequest`, and `ASS_RenderResult` acceptable working names?
+   `ass_render_frame2` was sketched in issue #73 for the RGBA-output design, which was never
+   implemented; an extensible request/result is a natural way for that output to arrive later without a
+   third render symbol.
 3. Do the measured bounded linked records fit libass conventions, or is a runtime-stride view preferable
    despite the added traversal contract?
 4. Are logical bounds plus optional pre-clip fill outlines and event bitmap bounds the right geometry
