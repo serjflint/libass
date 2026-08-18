@@ -3269,20 +3269,28 @@ static void setup_shaper(ASS_Shaper *shaper, ASS_Renderer *render_priv)
  */
 static bool
 ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
-                long long now)
+                long long now, ASS_RenderStatus *status)
 {
+    *status = ASS_RENDER_OK;
+
     if (!render_priv->settings.frame_width
-        && !render_priv->settings.frame_height)
+        && !render_priv->settings.frame_height) {
+        *status = ASS_RENDER_NOT_READY;
         return false;               // library not initialized
+    }
 
-    if (!render_priv->fontselect)
+    if (!render_priv->fontselect) {
+        *status = ASS_RENDER_NOT_READY;
         return false;
+    }
 
-    if (render_priv->library != track->library)
+    if (!track || render_priv->library != track->library) {
+        *status = ASS_RENDER_INVALID_REQUEST;
         return false;
+    }
 
     if (track->n_events == 0)
-        return false;               // nothing to do
+        return false;               // valid request, nothing to do
 
     render_priv->track = track;
     render_priv->time = now;
@@ -3622,17 +3630,6 @@ static ASS_Image *ass_free_image(ASS_Image *img) {
     return next;
 }
 
-static ASS_RenderStatus render_start_status(ASS_Renderer *priv,
-                                            ASS_Track *track)
-{
-    if (priv->library != track->library)
-        return ASS_RENDER_INVALID_REQUEST;
-    if ((!priv->settings.frame_width && !priv->settings.frame_height) ||
-        !priv->fontselect)
-        return ASS_RENDER_NOT_READY;
-    return ASS_RENDER_OK;
-}
-
 static void configure_layout_request(ASS_Renderer *priv,
                                      const ASS_LayoutRequest *request)
 {
@@ -3698,8 +3695,7 @@ static int ass_render_frame_internal(ASS_Renderer *priv, ASS_Track *track,
         configure_layout_request(priv, limits);
 
     // init frame
-    if (!ass_start_frame(priv, track, now)) {
-        *render_status = render_start_status(priv, track);
+    if (!ass_start_frame(priv, track, now, render_status)) {
         if (collect_metrics && priv->metrics_status == ASS_LAYOUT_OK) {
             priv->metrics_status = *render_status == ASS_RENDER_OK
                                  ? ASS_LAYOUT_EMPTY
@@ -3813,6 +3809,10 @@ static int ass_render_frame_internal(ASS_Renderer *priv, ASS_Track *track,
 ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                             long long now, int *detect_change)
 {
+    // This call invalidates whatever ass_render_frame2() last returned, so a
+    // retained pointer must not keep showing the previous frame.
+    memset(&priv->render_result, 0, sizeof(priv->render_result));
+
     ASS_RenderStatus status;
     int cnt = ass_render_frame_internal(priv, track, now, detect_change,
                                         &status, false, NULL);
@@ -3841,7 +3841,7 @@ static ASS_Layout *link_layout(ASS_Renderer *priv, int count)
  * \brief Free an ASS_LayoutOutline's memory as well as all the
  * memory of all ASS_LayoutOutlines following it.
  */
-void ass_free_metrics_outlines(ASS_LayoutOutline *outline)
+static void ass_free_metrics_outlines(ASS_LayoutOutline *outline)
 {
     while (outline) {
         ASS_LayoutOutline *next = outline->next;
@@ -3872,52 +3872,32 @@ void ass_free_metrics(ASS_Renderer *priv)
     priv->metrics_count = 0;
 }
 
-int ass_render_frame2(ASS_Renderer *renderer,
-                      const ASS_RenderRequest *request,
-                      ASS_RenderResult *result)
+const ASS_RenderResult *ass_render_frame2(ASS_Renderer *renderer,
+                                          const ASS_RenderRequest *request)
 {
-    if (!result)
-        return -1;
-
-    size_t capacity = result->struct_size;
-    memset(result, 0, capacity < sizeof(*result) ? capacity : sizeof(*result));
-    if (capacity >= sizeof(result->struct_size))
-        result->struct_size = sizeof(*result);
-    if (capacity < FIELD_END(ASS_RenderResult, images))
-        return -1;
-    if (capacity >= FIELD_END(ASS_RenderResult, change))
-        result->change = -1;
-
+    // No result record can exist without a renderer to own it or a request
+    // long enough to interpret.
     if (!renderer || !request ||
-        request->struct_size < FIELD_END(ASS_RenderRequest, now_ms)) {
-        result->status = ASS_RENDER_INVALID_REQUEST;
-        return -1;
-    }
+        request->struct_size < FIELD_END(ASS_RenderRequest, now_ms))
+        return NULL;
+
+    ASS_RenderResult *result = &renderer->render_result;
+    memset(result, 0, sizeof(*result));
+    // Not sizeof: a field appended into the tail padding would not change it,
+    // and a newer caller would read a field this runtime never wrote.
+    result->struct_size = FIELD_END(ASS_RenderResult, layout_status);
+    result->change = -1;
 
     unsigned flags = request->struct_size >= FIELD_END(ASS_RenderRequest, flags)
                    ? request->flags : 0;
-    if (flags & ~ASS_RENDER_DETECT_CHANGE) {
+    if ((flags & ~ASS_RENDER_DETECT_CHANGE) || !request->track) {
         result->status = ASS_RENDER_INVALID_REQUEST;
-        return 0;
-    }
-    if (!request->track) {
-        result->status = ASS_RENDER_INVALID_REQUEST;
-        return 0;
-    }
-    if ((flags & ASS_RENDER_DETECT_CHANGE) &&
-        capacity < FIELD_END(ASS_RenderResult, change)) {
-        result->status = ASS_RENDER_INVALID_REQUEST;
-        return -1;
+        return result;
     }
 
     const ASS_LayoutRequest *layout_request =
         request->struct_size >= FIELD_END(ASS_RenderRequest, layout)
         ? request->layout : NULL;
-    if (layout_request &&
-        capacity < FIELD_END(ASS_RenderResult, layout_status)) {
-        result->status = ASS_RENDER_INVALID_REQUEST;
-        return -1;
-    }
 
     int change = -1;
     int count = ass_render_frame_internal(
@@ -3925,14 +3905,13 @@ int ass_render_frame2(ASS_Renderer *renderer,
         flags & ASS_RENDER_DETECT_CHANGE ? &change : NULL,
         &result->status, layout_request != NULL, layout_request);
     result->images = count >= 0 ? renderer->images_root : NULL;
-    if (capacity >= FIELD_END(ASS_RenderResult, change))
-        result->change = change;
+    result->change = change;
     if (layout_request) {
         result->layout_status = renderer->metrics_status;
         result->layout = count >= 0 && renderer->metrics_status == ASS_LAYOUT_OK
                        ? link_layout(renderer, count) : NULL;
     }
-    return 0;
+    return result;
 }
 
 /**

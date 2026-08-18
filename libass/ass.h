@@ -667,13 +667,22 @@ typedef struct ass_render_request {
 /**
  * Outputs from ass_render_frame2().
  *
- * Initialize the complete structure to zero and pass writable capacity in
- * struct_size.  On return, struct_size contains the size of the result record
- * known to the runtime library.  A field may be read only if both the original
- * caller capacity and the returned runtime size cover the complete field.
+ * The record is owned by the renderer; the caller never writes or frees it.
+ * struct_size is the end offset of the last field this runtime knows and has
+ * populated -- deliberately not sizeof, which a field appended into trailing
+ * padding would leave unchanged.  Read a field only when struct_size covers
+ * its complete extent:
  *
- * The structure itself is caller-owned.  images is owned by the renderer and
- * has the same lifetime as the result of ass_render_frame().
+ *     if (result->struct_size >= offsetof(ASS_RenderResult, field)
+ *                                + sizeof(result->field))
+ *
+ * A shorter struct_size means the field is absent, not that its value is
+ * zero.  Copy fields individually behind that guard; copying the whole
+ * structure reads past the end of a shorter runtime's record.
+ *
+ * The record and everything reachable from it, including images and layout,
+ * are invalidated by the next rendering call on the same renderer or by
+ * ass_renderer_done().  Copy whatever must outlive that.
  */
 typedef struct ass_render_result {
     size_t struct_size;
@@ -687,13 +696,16 @@ typedef struct ass_render_result {
 /**
  * Render a frame through the extensible request/result interface.
  *
- * Returns 0 after populating result.  Returns -1 if request or result is NULL
- * or shorter than the documented minimum prefix.  Unknown flag bits produce
- * ASS_RENDER_INVALID_REQUEST without rendering.
+ * Returns a renderer-owned result, fully populated on every outcome including
+ * failure, so status can be inspected without a separate error path.
+ *
+ * Returns NULL only when no result record can exist at all: renderer or
+ * request is NULL, or request->struct_size is below the documented minimum
+ * prefix.  Unknown flag bits render nothing and report
+ * ASS_RENDER_INVALID_REQUEST in the returned record.
  */
-int ass_render_frame2(ASS_Renderer *renderer,
-                      const ASS_RenderRequest *request,
-                      ASS_RenderResult *result);
+const ASS_RenderResult *ass_render_frame2(ASS_Renderer *renderer,
+                                          const ASS_RenderRequest *request);
 
 
 /*
