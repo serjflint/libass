@@ -1,5 +1,8 @@
 /* Repeated render replacement and teardown against the renderer-owned result.
  * Pass an iteration count to run the long stress form. */
+/* Every check here is an assert(); a -DNDEBUG build must not turn this
+ * program into a silent no-op. */
+#undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,8 +66,9 @@ int main(int argc, char **argv)
 
         const ASS_RenderResult *res = ass_render_frame2(ren, &req);
         assert(res);
-        assert(res->struct_size == sizeof(ASS_RenderResult));
+        assert(res->struct_size <= sizeof(ASS_RenderResult));
         assert(res->status == ASS_RENDER_OK);
+        assert(res->images);
         if (!stable)
             stable = res;
         /* The renderer must reuse one record, not reallocate per frame. */
@@ -96,6 +100,8 @@ int main(int argc, char **argv)
             ass_render_frame(ren, track, req.now_ms, NULL);
     }
 
+    /* Without this the whole layout branch could go hollow and still pass. */
+    assert(with_layout > 0);
     printf("iterations=%ld layouts=%ld\n", iterations, with_layout);
     ass_free_track(track);
     ass_renderer_done(ren);

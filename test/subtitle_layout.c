@@ -4,6 +4,9 @@
  * event separation, lifetime, and render identity.
  */
 
+/* Every check here is an assert(); a -DNDEBUG build must not turn this
+ * program into a silent no-op. */
+#undef NDEBUG
 #include <assert.h>
 #include <limits.h>
 #include <math.h>

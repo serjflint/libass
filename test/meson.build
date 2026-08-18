@@ -1,13 +1,16 @@
-test_src = files('test.c')
-
-libass_test = executable(
-    'libass_test',
-    test_src,
-    install: false,
-    include_directories: incs,
-    dependencies: deps + png_deps,
-    link_with: libass_for_tools,
-)
+# The libpng-based comparison program stays behind the `test` option; the
+# public-API tests below need neither it nor libpng, and gating them there
+# meant a default meson build exercised none of ass_render_frame2.
+if get_option('test').enabled()
+    libass_test = executable(
+        'libass_test',
+        files('test.c'),
+        install: false,
+        include_directories: incs,
+        dependencies: deps + png_deps,
+        link_with: libass_for_tools,
+    )
+endif
 
 render_api_test = executable(
     'render_api_test',

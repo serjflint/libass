@@ -3264,20 +3264,28 @@ static void setup_shaper(ASS_Shaper *shaper, ASS_Renderer *render_priv)
  */
 static bool
 ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
-                long long now)
+                long long now, ASS_RenderStatus *status)
 {
+    *status = ASS_RENDER_OK;
+
     if (!render_priv->settings.frame_width
-        && !render_priv->settings.frame_height)
+        && !render_priv->settings.frame_height) {
+        *status = ASS_RENDER_NOT_READY;
         return false;               // library not initialized
+    }
 
-    if (!render_priv->fontselect)
+    if (!render_priv->fontselect) {
+        *status = ASS_RENDER_NOT_READY;
         return false;
+    }
 
-    if (render_priv->library != track->library)
+    if (!track || render_priv->library != track->library) {
+        *status = ASS_RENDER_INVALID_REQUEST;
         return false;
+    }
 
     if (track->n_events == 0)
-        return false;               // nothing to do
+        return false;               // valid request, nothing to do
 
     render_priv->track = track;
     render_priv->time = now;
@@ -3626,17 +3634,6 @@ static ASS_Image *ass_free_image(ASS_Image *img) {
  *        0 if identical, 1 if different positions, 2 if different content.
  *        Can be NULL, in that case no detection is performed.
  */
-static ASS_RenderStatus render_start_status(ASS_Renderer *priv,
-                                            ASS_Track *track)
-{
-    if (priv->library != track->library)
-        return ASS_RENDER_INVALID_REQUEST;
-    if ((!priv->settings.frame_width && !priv->settings.frame_height) ||
-        !priv->fontselect)
-        return ASS_RENDER_NOT_READY;
-    return ASS_RENDER_OK;
-}
-
 #define FIELD_END(type, field) \
     (offsetof(type, field) + sizeof(((type *) 0)->field))
 
@@ -3696,8 +3693,7 @@ static int ass_render_frame_internal(ASS_Renderer *priv, ASS_Track *track,
         configure_layout_request(priv, limits);
 
     // init frame
-    if (!ass_start_frame(priv, track, now)) {
-        *render_status = render_start_status(priv, track);
+    if (!ass_start_frame(priv, track, now, render_status)) {
         if (collect_metrics && priv->metrics_status == ASS_LAYOUT_OK) {
             priv->metrics_status = *render_status == ASS_RENDER_OK
                                  ? ASS_LAYOUT_EMPTY
@@ -3811,6 +3807,10 @@ static int ass_render_frame_internal(ASS_Renderer *priv, ASS_Track *track,
 ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                             long long now, int *detect_change)
 {
+    // This call invalidates whatever ass_render_frame2() last returned, so a
+    // retained pointer must not keep showing the previous frame.
+    memset(&priv->render_result, 0, sizeof(priv->render_result));
+
     ASS_RenderStatus status;
     int cnt = ass_render_frame_internal(priv, track, now, detect_change,
                                         &status, false, NULL);
@@ -3839,7 +3839,7 @@ static ASS_Layout *link_layout(ASS_Renderer *priv, int count)
  * \brief Free an ASS_LayoutOutline's memory as well as all the
  * memory of all ASS_LayoutOutlines following it.
  */
-void ass_free_metrics_outlines(ASS_LayoutOutline *outline)
+static void ass_free_metrics_outlines(ASS_LayoutOutline *outline)
 {
     while (outline) {
         ASS_LayoutOutline *next = outline->next;
@@ -3879,11 +3879,11 @@ const ASS_RenderResult *ass_render_frame2(ASS_Renderer *renderer,
         request->struct_size < FIELD_END(ASS_RenderRequest, now_ms))
         return NULL;
 
-    // Repopulated in full every call, so a retained pointer never shows the
-    // previous frame's images or layout.
     ASS_RenderResult *result = &renderer->render_result;
     memset(result, 0, sizeof(*result));
-    result->struct_size = sizeof(*result);
+    // Not sizeof: a field appended into the tail padding would not change it,
+    // and a newer caller would read a field this runtime never wrote.
+    result->struct_size = FIELD_END(ASS_RenderResult, layout_status);
     result->change = -1;
 
     unsigned flags = request->struct_size >= FIELD_END(ASS_RenderRequest, flags)

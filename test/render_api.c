@@ -1,5 +1,8 @@
 /* Structural and compatibility tests for ass_render_frame2. */
 
+/* Every check here is an assert(); a -DNDEBUG build must not turn this
+ * program into a silent no-op. */
+#undef NDEBUG
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -84,8 +87,7 @@ static ASS_RenderRequest request_for(ASS_Track *track, unsigned flags)
  * struct_size both cover it. */
 static int field_available(const ASS_RenderResult *result, size_t field_end)
 {
-    return sizeof(ASS_RenderResult) >= field_end &&
-           result->struct_size >= field_end;
+    return result->struct_size >= field_end;
 }
 
 int main(void)
@@ -109,7 +111,12 @@ int main(void)
     const ASS_RenderResult *result =
         ass_render_frame2(new_api_renderer, &request);
     assert(result);
-    assert(result->struct_size == sizeof(ASS_RenderResult));
+/* The reported size is the end of the last known field, not sizeof: a field
+     * appended into the tail padding would not move sizeof, and a newer caller
+     * would then read bytes this runtime never wrote. */
+    assert(result->struct_size ==
+           FIELD_END(ASS_RenderResult, layout_status));
+    assert(result->struct_size <= sizeof(ASS_RenderResult));
     assert(result->status == ASS_RENDER_OK);
     assert(result->images);
     assert(result->change == legacy_change);
@@ -167,9 +174,9 @@ int main(void)
     request = request_for(track, ASS_RENDER_DETECT_CHANGE);
     result = ass_render_frame2(new_api_renderer, &request);
     assert(result);
-    assert(result->struct_size > sizeof(struct old_result));
+    assert(result->struct_size > FIELD_END(struct old_result, change));
     struct old_result truncated;
-    memcpy(&truncated, result, sizeof(truncated));
+    memcpy(&truncated, result, FIELD_END(struct old_result, change));
     assert(truncated.struct_size == result->struct_size);
     assert(truncated.status == result->status);
     assert(truncated.images == result->images);

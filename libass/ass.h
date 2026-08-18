@@ -668,10 +668,17 @@ typedef struct ass_render_request {
  * Outputs from ass_render_frame2().
  *
  * The record is owned by the renderer; the caller never writes or frees it.
- * struct_size is the size of the record this runtime knows and has fully
- * populated.  Read a field only if both sizeof(ASS_RenderResult) as the caller
- * compiled it and the returned struct_size cover the complete field.  A
- * shorter struct_size means the field is absent, not that its value is zero.
+ * struct_size is the end offset of the last field this runtime knows and has
+ * populated -- deliberately not sizeof, which a field appended into trailing
+ * padding would leave unchanged.  Read a field only when struct_size covers
+ * its complete extent:
+ *
+ *     if (result->struct_size >= offsetof(ASS_RenderResult, field)
+ *                                + sizeof(result->field))
+ *
+ * A shorter struct_size means the field is absent, not that its value is
+ * zero.  Copy fields individually behind that guard; copying the whole
+ * structure reads past the end of a shorter runtime's record.
  *
  * The record and everything reachable from it, including images and layout,
  * are invalidated by the next rendering call on the same renderer or by
