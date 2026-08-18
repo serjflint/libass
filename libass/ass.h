@@ -624,13 +624,17 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
  * Status of an ass_render_frame2() render operation.  This is independent
  * from statuses of optional outputs added to ASS_RenderResult.
  */
-typedef enum ass_render_status {
+typedef enum {
     ASS_RENDER_OK = 0,
     ASS_RENDER_INVALID_REQUEST,
     ASS_RENDER_NOT_READY,
 } ASS_RenderStatus;
 
-typedef enum ass_layout_status {
+/**
+ * \brief Status of the optional layout output, independent from the render
+ * status: layout can fail while ordinary images are still produced.
+ */
+typedef enum {
     ASS_LAYOUT_NOT_REQUESTED = 0,
     ASS_LAYOUT_OK,
     ASS_LAYOUT_EMPTY,
@@ -643,10 +647,13 @@ typedef enum ass_layout_status {
 typedef struct ass_layout_request ASS_LayoutRequest;
 typedef struct ass_layout ASS_Layout;
 
-enum {
+/**
+ * \brief Optional behavior bits for ASS_RenderRequest.flags.
+ */
+typedef enum {
     /** Compute the same change classification as ass_render_frame(). */
     ASS_RENDER_DETECT_CHANGE = 1u << 0,
-};
+} ASS_RenderFlags;
 
 /**
  * Inputs for ass_render_frame2().
@@ -655,6 +662,10 @@ enum {
  * structure known to the caller, then populate the desired fields.  Missing
  * tail fields have zero/default behavior.  Larger structures are accepted;
  * unknown tail bytes are ignored.
+ *
+ * struct_size must cover at least track and now_ms; anything shorter is
+ * rejected.  Note that the nested layout request has the opposite convention:
+ * a zeroed ASS_LayoutRequest is invalid rather than default.  See ass_layout.h.
  */
 typedef struct ass_render_request {
     size_t struct_size;
@@ -688,21 +699,25 @@ typedef struct ass_render_result {
     size_t struct_size;
     ASS_RenderStatus status;
     ASS_Image *images;
-    int change;  // -1 unless ASS_RENDER_DETECT_CHANGE was requested
+    int change;  // -1 when no change classification was computed, which
+                 // includes a request that failed validation even if it
+                 // asked for ASS_RENDER_DETECT_CHANGE
     const ASS_Layout *layout;
     ASS_LayoutStatus layout_status;
 } ASS_RenderResult;
 
 /**
- * Render a frame through the extensible request/result interface.
+ * \brief Render a frame through the extensible request/result interface.
+ * \param renderer renderer handle
+ * \param request inputs; see ASS_RenderRequest for the size rules
+ * \return a renderer-owned result, fully populated on every outcome
+ * including failure so status can be inspected without a separate error
+ * path, or NULL when no result record can exist at all: renderer or request
+ * is NULL, or request->struct_size does not cover through now_ms.
  *
- * Returns a renderer-owned result, fully populated on every outcome including
- * failure, so status can be inspected without a separate error path.
- *
- * Returns NULL only when no result record can exist at all: renderer or
- * request is NULL, or request->struct_size is below the documented minimum
- * prefix.  Unknown flag bits render nothing and report
- * ASS_RENDER_INVALID_REQUEST in the returned record.
+ * Unknown flag bits render nothing and report ASS_RENDER_INVALID_REQUEST in
+ * the returned record.  The result is invalidated by the next rendering call
+ * on this renderer, including ass_render_frame().
  */
 const ASS_RenderResult *ass_render_frame2(ASS_Renderer *renderer,
                                           const ASS_RenderRequest *request);

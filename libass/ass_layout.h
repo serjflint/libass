@@ -27,7 +27,15 @@ enum {
     ASS_LAYOUT_UNBOUNDED = 1u << 0,
 };
 
-/* Aggregate limits across all active events in one returned layout. */
+/*
+ * Aggregate limits across all active events in one returned layout.
+ *
+ * Unlike ASS_RenderRequest, a zeroed request is NOT a usable default: bounded
+ * collection requires every limit below to be non-zero, and a zero yields
+ * ASS_LAYOUT_INVALID_REQUEST. Unbounded collection must be asked for with
+ * ASS_LAYOUT_UNBOUNDED, so it can never be selected by accident; it is meant
+ * for trusted authoring input, not untrusted media.
+ */
 struct ass_layout_request {
     size_t struct_size;
     unsigned flags;
