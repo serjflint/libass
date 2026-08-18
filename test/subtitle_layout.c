@@ -268,6 +268,30 @@ static ASS_Image *render_bounded(ASS_Renderer *renderer, ASS_Track *track,
 
 static ASS_LayoutUnitMode last_unit_mode;
 
+/*
+ * The advertised use case, resolved with public data only: which text does a
+ * point on screen belong to? Coordinates are never asserted directly, only
+ * that the round trip lands somewhere usable.
+ */
+static ASS_LayoutUnit *hit_test(ASS_LayoutEvent *events, double x, double y,
+                                ASS_LayoutEvent **owner)
+{
+    for (ASS_LayoutEvent *event = events; event; event = event->next) {
+        for (ASS_LayoutUnit *unit = event->units; unit; unit = unit->next) {
+            const ASS_LayoutRect *box = &unit->logical_bounds;
+            if (box->w <= 0 || box->h <= 0)
+                continue;
+            if (x >= box->x && x < box->x + box->w &&
+                y >= box->y && y < box->y + box->h) {
+                if (owner)
+                    *owner = event;
+                return unit;
+            }
+        }
+    }
+    return NULL;
+}
+
 static ASS_Image *render_unbounded(ASS_Renderer *renderer, ASS_Track *track,
                                    long long now, int *detect_change,
                                    ASS_LayoutEvent **metrics)
@@ -690,6 +714,69 @@ int main(void)
     assert(metrics->next->duration_ms == 3000);
     assert(strcmp(metrics->next->text, "second") == 0);
     ass_free_track(prune_track);
+
+    /*
+     * Pointing at any laid-out unit resolves to a text range that a consumer
+     * can slice out, and pointing away from the subtitle resolves to nothing.
+     */
+    with_metrics = render_unbounded(renderer, track, 1000, NULL, &metrics);
+    assert(with_metrics);
+    size_t probed = 0;
+    for (ASS_LayoutEvent *event = metrics; event; event = event->next) {
+        for (ASS_LayoutUnit *unit = event->units; unit; unit = unit->next) {
+            const ASS_LayoutRect *box = &unit->logical_bounds;
+            if (box->w <= 0 || box->h <= 0)
+                continue;
+            ASS_LayoutEvent *owner = NULL;
+            ASS_LayoutUnit *hit = hit_test(metrics, box->x + box->w / 2,
+                                           box->y + box->h / 2, &owner);
+            assert(hit);
+            assert(owner);
+            assert(hit->text_start < hit->text_end);
+            assert(hit->text_end <= owner->text_length);
+            assert(utf8_boundary(owner->text, owner->text_length,
+                                 hit->text_start));
+            assert(utf8_boundary(owner->text, owner->text_length,
+                                 hit->text_end));
+            probed++;
+        }
+    }
+    assert(probed > 0);
+    assert(!hit_test(metrics, -1.0e6, -1.0e6, NULL));
+
+    /* Layout is a function of the render, not of accumulated renderer state. */
+    struct { size_t start, end; int line; ASS_LayoutRect box; } baseline[256];
+    size_t baseline_count = 0;
+    for (ASS_LayoutEvent *event = metrics; event; event = event->next) {
+        for (ASS_LayoutUnit *unit = event->units; unit; unit = unit->next) {
+            assert(baseline_count < 256);
+            baseline[baseline_count].start = unit->text_start;
+            baseline[baseline_count].end = unit->text_end;
+            baseline[baseline_count].line = unit->line;
+            baseline[baseline_count].box = unit->logical_bounds;
+            baseline_count++;
+        }
+    }
+    assert(baseline_count > 0);
+    ASS_LayoutEvent *elsewhere = NULL;
+    render_unbounded(renderer, track, 4000, NULL, &elsewhere);
+    with_metrics = render_unbounded(renderer, track, 1000, NULL, &metrics);
+    assert(with_metrics);
+    size_t again = 0;
+    for (ASS_LayoutEvent *event = metrics; event; event = event->next) {
+        for (ASS_LayoutUnit *unit = event->units; unit; unit = unit->next) {
+            assert(again < baseline_count);
+            assert(unit->text_start == baseline[again].start);
+            assert(unit->text_end == baseline[again].end);
+            assert(unit->line == baseline[again].line);
+            assert(unit->logical_bounds.x == baseline[again].box.x);
+            assert(unit->logical_bounds.y == baseline[again].box.y);
+            assert(unit->logical_bounds.w == baseline[again].box.w);
+            assert(unit->logical_bounds.h == baseline[again].box.h);
+            again++;
+        }
+    }
+    assert(again == baseline_count);
 
     ass_flush_events(track);
     with_metrics = render_unbounded(renderer, track, 1000, NULL,
