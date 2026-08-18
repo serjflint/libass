@@ -399,6 +399,39 @@ static ASS_Image *render_unbounded(ASS_Renderer *renderer, ASS_Track *track,
     return images;
 }
 
+/*
+ * This suite needs a system font that shapes Japanese and Arabic; the bundled
+ * test font covers none of it, and libass CI installs -dev packages but never
+ * font files, so bare images (Alpine, OmniOS) and font-poor ones (NetBSD) turn
+ * up without it.
+ *
+ * Decide once, here, and skip the whole suite when a capability is absent.
+ * Weakening individual assertions instead would let the shaping contract pass
+ * silently on the very machines that cannot check it. The probe uses its own
+ * renderer so it cannot perturb cache, change detection, or pruning state.
+ */
+static const char *missing_capability(ASS_Library *library, ASS_Track *track)
+{
+    ASS_Renderer *probe = new_renderer(library);
+    const char *reason = NULL;
+    ASS_LayoutEvent *metrics = NULL;
+
+    if (!ass_render_frame(probe, track, 1000, NULL)) {
+        reason = "no usable system font";
+    } else if (!render_unbounded(probe, track, 42000, NULL, &metrics) ||
+               !metrics) {
+        reason = "no layout for the Arabic ligature event";
+    } else {
+        ASS_LayoutUnit *lam = cluster_at(metrics, 0);
+        ASS_LayoutUnit *alef = cluster_at(metrics, 2);
+        if (!lam || lam != alef)
+            reason = "font does not shape Arabic lam-alef as one cluster";
+    }
+
+    ass_renderer_done(probe);
+    return reason;
+}
+
 int main(void)
 {
     ASS_Library *library = ass_library_init();
@@ -408,6 +441,15 @@ int main(void)
     ASS_Track *track = ass_read_memory(library, (char *) fixture,
                                        sizeof(fixture) - 1, NULL);
     assert(track);
+    const char *missing = missing_capability(library, track);
+    if (missing) {
+        fprintf(stderr, "skipping layout suite: %s\n", missing);
+        ass_free_track(track);
+        ass_renderer_done(renderer);
+        ass_library_done(library);
+        return 77;
+    }
+
     ASS_Image *plain = ass_render_frame(renderer, track, 1000, NULL);
     assert(plain);
     uint64_t plain_hash = hash_images(plain);
