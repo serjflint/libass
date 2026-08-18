@@ -613,9 +613,114 @@ void ass_set_cache_limits(ASS_Renderer *priv, int glyph_max,
  * \param now video timestamp in milliseconds
  * \param detect_change compare to the previous call and set to 1
  * if positions may have changed, or set to 2 if content may have changed.
+ *
+ * The returned ASS_Images live until the next rendering call on the same
+ * renderer or ass_renderer_done().
  */
 ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                             long long now, int *detect_change);
+
+/**
+ * Status of an ass_render_frame2() render operation.  This is independent
+ * from statuses of optional outputs added to ASS_RenderResult.
+ */
+typedef enum {
+    ASS_RENDER_OK = 0,
+    ASS_RENDER_INVALID_REQUEST,
+    ASS_RENDER_NOT_READY,
+} ASS_RenderStatus;
+
+/**
+ * \brief Status of the optional layout output, independent from the render
+ * status: layout can fail while ordinary images are still produced.
+ */
+typedef enum {
+    ASS_LAYOUT_NOT_REQUESTED = 0,
+    ASS_LAYOUT_OK,
+    ASS_LAYOUT_EMPTY,
+    ASS_LAYOUT_LIMIT_EXCEEDED,
+    ASS_LAYOUT_ALLOCATION_FAILED,
+    ASS_LAYOUT_FAILED,
+    ASS_LAYOUT_INVALID_REQUEST,
+} ASS_LayoutStatus;
+
+typedef struct ass_layout_request ASS_LayoutRequest;
+typedef struct ass_layout ASS_Layout;
+
+/**
+ * \brief Optional behavior bits for ASS_RenderRequest.flags.
+ */
+typedef enum {
+    /** Compute the same change classification as ass_render_frame(). */
+    ASS_RENDER_DETECT_CHANGE = 1u << 0,
+} ASS_RenderFlags;
+
+/**
+ * Inputs for ass_render_frame2().
+ *
+ * Initialize the complete structure to zero, set struct_size to sizeof the
+ * structure known to the caller, then populate the desired fields.  Missing
+ * tail fields have zero/default behavior.  Larger structures are accepted;
+ * unknown tail bytes are ignored.
+ *
+ * struct_size must cover at least track and now_ms; anything shorter is
+ * rejected.  Note that the nested layout request has the opposite convention:
+ * a zeroed ASS_LayoutRequest is invalid rather than default.  See ass_layout.h.
+ */
+typedef struct ass_render_request {
+    size_t struct_size;
+    ASS_Track *track;
+    long long now_ms;
+    unsigned flags;
+    const ASS_LayoutRequest *layout;
+} ASS_RenderRequest;
+
+/**
+ * Outputs from ass_render_frame2().
+ *
+ * The record is owned by the renderer; the caller never writes or frees it.
+ * struct_size is the end offset of the last field this runtime knows and has
+ * populated -- deliberately not sizeof, which a field appended into trailing
+ * padding would leave unchanged.  Read a field only when struct_size covers
+ * its complete extent:
+ *
+ *     if (result->struct_size >= offsetof(ASS_RenderResult, field)
+ *                                + sizeof(result->field))
+ *
+ * A shorter struct_size means the field is absent, not that its value is
+ * zero.  Copy fields individually behind that guard; copying the whole
+ * structure reads past the end of a shorter runtime's record.
+ *
+ * The record and everything reachable from it, including images and layout,
+ * are invalidated by the next rendering call on the same renderer or by
+ * ass_renderer_done().  Copy whatever must outlive that.
+ */
+typedef struct ass_render_result {
+    size_t struct_size;
+    ASS_RenderStatus status;
+    ASS_Image *images;
+    int change;  // -1 when no change classification was computed, which
+                 // includes a request that failed validation even if it
+                 // asked for ASS_RENDER_DETECT_CHANGE
+    const ASS_Layout *layout;
+    ASS_LayoutStatus layout_status;
+} ASS_RenderResult;
+
+/**
+ * \brief Render a frame through the extensible request/result interface.
+ * \param renderer renderer handle
+ * \param request inputs; see ASS_RenderRequest for the size rules
+ * \return a renderer-owned result, fully populated on every outcome
+ * including failure so status can be inspected without a separate error
+ * path, or NULL when no result record can exist at all: renderer or request
+ * is NULL, or request->struct_size does not cover through now_ms.
+ *
+ * Unknown flag bits render nothing and report ASS_RENDER_INVALID_REQUEST in
+ * the returned record.  The result is invalidated by the next rendering call
+ * on this renderer, including ass_render_frame().
+ */
+const ASS_RenderResult *ass_render_frame2(ASS_Renderer *renderer,
+                                          const ASS_RenderRequest *request);
 
 
 /*
