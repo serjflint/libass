@@ -343,6 +343,8 @@ struct ass_renderer {
     size_t metrics_text_bytes;
     size_t metrics_clusters;
     size_t metrics_bitmap_pixels;
+    // Test-only; see ass_alloc_should_fail. Zero disables.
+    size_t test_alloc_countdown;
 
     // frame-global data
     int width, height;          // screen dimensions (the whole frame from ass_set_frame_size)
@@ -382,5 +384,12 @@ ASS_Vector ass_layout_res(ASS_Renderer *render_priv);
 
 // XXX: this is actually in ass.c, includes should be fixed later on
 void ass_lazy_track_init(ASS_Library *lib, ASS_Track *track);
+
+
+/* Test-only seam; see ass_alloc_should_fail. Declared here rather than left to
+ * an ad-hoc extern in each test, so the definition and its callers cannot drift
+ * apart silently -- this build enables neither -Wmissing-prototypes nor anything
+ * else that would notice. Deliberately absent from libass.sym. */
+void ass_test_set_alloc_countdown(ASS_Renderer *renderer, size_t n);
 
 #endif /* LIBASS_RENDER_H */

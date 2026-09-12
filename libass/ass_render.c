@@ -2506,7 +2506,9 @@ static ASS_LayoutUnit *append_cluster_metrics(RenderContext *state,
                          renderer->metrics_limits.max_units))
         return NULL;
 
-    ASS_LayoutUnit *cluster = calloc(1, sizeof(*cluster));
+    ASS_LayoutUnit *cluster =
+        ass_alloc_should_fail(&state->renderer->test_alloc_countdown)
+        ? NULL : calloc(1, sizeof(*cluster));
     if (!cluster) {
         metrics_fail(state, ASS_LAYOUT_ALLOCATION_FAILED);
         return NULL;
@@ -2902,8 +2904,11 @@ static bool finalize_metrics_text(RenderContext *state, ASS_LayoutEvent *metrics
                          renderer->metrics_limits.max_text_bytes))
         return false;
 
-    size_t *byte_offsets = calloc(count + 1, sizeof(*byte_offsets));
-    char *text = malloc(length + 1);
+    size_t *byte_offsets =
+        ass_alloc_should_fail(&renderer->test_alloc_countdown)
+        ? NULL : calloc(count + 1, sizeof(*byte_offsets));
+    char *text = ass_alloc_should_fail(&renderer->test_alloc_countdown)
+        ? NULL : malloc(length + 1);
     if (!byte_offsets || !text) {
         free(byte_offsets);
         free(text);
@@ -3802,6 +3807,19 @@ void ass_free_metrics(ASS_Renderer *priv)
         memset(metrics, 0, sizeof(*metrics));
     }
     priv->metrics_count = 0;
+}
+
+/*
+ * Arm the layout collector's allocation-failure seam: the nth metrics
+ * allocation from now returns NULL, and only that one. Zero disarms.
+ *
+ * Deliberately not in libass.sym -- this exists for the in-tree contract
+ * suite, which links the static library, and must not become API.
+ */
+void ass_test_set_alloc_countdown(ASS_Renderer *renderer, size_t n)
+{
+    if (renderer)
+        renderer->test_alloc_countdown = n;
 }
 
 const ASS_RenderResult *ass_render_frame2(ASS_Renderer *renderer,
