@@ -77,6 +77,58 @@ void ass_outline_free(ASS_Outline *outline)
 }
 
 
+/*
+ * \brief Allocate an ASS_LayoutOutline's memory and copy the given
+ * ASS_Outline's data into it.
+ */
+bool ass_metric_outline_copy(ASS_LayoutOutline *metrics_outline,
+                             ASS_Outline *outline, size_t *alloc_countdown)
+{
+    metrics_outline->point_count = outline->n_points;
+    metrics_outline->segment_count = outline->n_segments;
+    metrics_outline->points = outline->n_points
+        && !ass_alloc_should_fail(alloc_countdown)
+        ? malloc(sizeof(ASS_DVector) * outline->n_points) : NULL;
+    metrics_outline->segments = outline->n_segments
+        && !ass_alloc_should_fail(alloc_countdown)
+        ? malloc(outline->n_segments) : NULL;
+    if ((outline->n_points && !metrics_outline->points) ||
+        (outline->n_segments && !metrics_outline->segments)) {
+        free(metrics_outline->points);
+        free(metrics_outline->segments);
+        metrics_outline->points = NULL;
+        metrics_outline->segments = NULL;
+        metrics_outline->point_count = 0;
+        metrics_outline->segment_count = 0;
+        return false;
+    }
+
+    if (outline->n_segments)
+        memcpy(metrics_outline->segments, outline->segments, outline->n_segments);
+
+    for (size_t i = 0; i < outline->n_points; i++) {
+        metrics_outline->points[i].x = d6_to_double(outline->points[i].x);
+        metrics_outline->points[i].y = d6_to_double(outline->points[i].y);
+    }
+    return true;
+}
+
+/*
+ * \brief Free the point and segments lists of an ASS_LayoutOutline
+ */
+void ass_metric_outline_free(ASS_LayoutOutline *metrics_outline)
+{
+    if (!metrics_outline)
+        return;
+
+    free(metrics_outline->points);
+    free(metrics_outline->segments);
+    metrics_outline->points = NULL;
+    metrics_outline->segments = NULL;
+    metrics_outline->point_count = 0;
+    metrics_outline->segment_count = 0;
+}
+
 static bool valid_point(const FT_Vector *pt)
 {
     return pt->x >= -OUTLINE_MAX && pt->x <= OUTLINE_MAX &&

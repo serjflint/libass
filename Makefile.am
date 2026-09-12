@@ -25,7 +25,11 @@ EXTRA_DIST += gen_defs.py meson_options.txt meson.build \
               libass/meson.build libass/ass/meson.build \
               fuzz/meson.build checkasm/meson.build \
               compare/meson.build \
-              profile/meson.build test/meson.build
+              profile/meson.build test/meson.build \
+              test/render_api.c test/render_lifetime.c \
+              test/layout_contract.c test/layout_alloc.c \
+              test/subtitle_layout.c \
+              compare/test/font1.ttf
 
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = libass.pc
@@ -42,6 +46,54 @@ TESTS =
 
 include libass/Makefile_library.am
 include Makefile_util.am
+
+# No -static here, unlike the programs in Makefile_util.am: those link the
+# always-static libass_internal.la, while these link the public libass.la and
+# must therefore resolve only against libass.sym. -static also breaks them in
+# a --disable-static build.
+check_PROGRAMS += test/render_api
+TESTS += test/render_api$(EXEEXT)
+test_render_api_SOURCES = test/render_api.c
+test_render_api_CPPFLAGS = $(AM_CPPFLAGS) \
+    -DASS_TEST_FONT='"$(abs_top_srcdir)/compare/test/font1.ttf"'
+test_render_api_LDADD = libass/libass.la
+test_render_api_LDFLAGS = $(AM_LDFLAGS)
+
+check_PROGRAMS += test/render-lifetime
+TESTS += test/render-lifetime$(EXEEXT)
+test_render_lifetime_SOURCES = test/render_lifetime.c
+test_render_lifetime_CPPFLAGS = $(AM_CPPFLAGS) \
+    -DASS_TEST_FONT='"$(abs_top_srcdir)/compare/test/font1.ttf"'
+test_render_lifetime_LDADD = libass/libass.la
+test_render_lifetime_LDFLAGS = $(AM_LDFLAGS)
+
+check_PROGRAMS += test/layout-contract
+TESTS += test/layout-contract$(EXEEXT)
+test_layout_contract_SOURCES = test/layout_contract.c
+test_layout_contract_CPPFLAGS = $(AM_CPPFLAGS) \
+    -DASS_TEST_FONT='"$(abs_top_srcdir)/compare/test/font1.ttf"'
+test_layout_contract_LDADD = libass/libass.la
+test_layout_contract_LDFLAGS = $(AM_LDFLAGS)
+
+# This one does link libass_internal.la, and -static with it: it reaches
+# ass_test_set_alloc_countdown, which is internal and deliberately absent from
+# libass.sym. Keeping it out of test/layout-contract is what lets that suite go
+# on proving the public library exports everything a caller needs.
+check_PROGRAMS += test/layout-alloc
+TESTS += test/layout-alloc$(EXEEXT)
+test_layout_alloc_SOURCES = test/layout_alloc.c
+test_layout_alloc_CPPFLAGS = $(AM_CPPFLAGS) \
+    -DASS_TEST_FONT='"$(abs_top_srcdir)/compare/test/font1.ttf"'
+test_layout_alloc_LDADD = libass/libass_internal.la
+test_layout_alloc_LDFLAGS = $(AM_LDFLAGS) -static
+
+if FONTCONFIG
+check_PROGRAMS += test/subtitle-layout
+TESTS += test/subtitle-layout$(EXEEXT)
+test_subtitle_layout_SOURCES = test/subtitle_layout.c
+test_subtitle_layout_LDADD = libass/libass.la
+test_subtitle_layout_LDFLAGS = $(AM_LDFLAGS)
+endif
 
 # Tests
 if ENABLE_FUZZ
