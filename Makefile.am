@@ -27,7 +27,7 @@ EXTRA_DIST += gen_defs.py meson_options.txt meson.build \
               compare/meson.build \
               profile/meson.build test/meson.build \
               test/render_api.c test/render_lifetime.c \
-              test/layout_contract.c \
+              test/layout_contract.c test/layout_alloc.c \
               test/subtitle_layout.c \
               compare/test/font1.ttf
 
@@ -74,6 +74,18 @@ test_layout_contract_CPPFLAGS = $(AM_CPPFLAGS) \
     -DASS_TEST_FONT='"$(abs_top_srcdir)/compare/test/font1.ttf"'
 test_layout_contract_LDADD = libass/libass.la
 test_layout_contract_LDFLAGS = $(AM_LDFLAGS)
+
+# This one does link libass_internal.la, and -static with it: it reaches
+# ass_test_set_alloc_countdown, which is internal and deliberately absent from
+# libass.sym. Keeping it out of test/layout-contract is what lets that suite go
+# on proving the public library exports everything a caller needs.
+check_PROGRAMS += test/layout-alloc
+TESTS += test/layout-alloc$(EXEEXT)
+test_layout_alloc_SOURCES = test/layout_alloc.c
+test_layout_alloc_CPPFLAGS = $(AM_CPPFLAGS) \
+    -DASS_TEST_FONT='"$(abs_top_srcdir)/compare/test/font1.ttf"'
+test_layout_alloc_LDADD = libass/libass_internal.la
+test_layout_alloc_LDFLAGS = $(AM_LDFLAGS) -static
 
 if FONTCONFIG
 check_PROGRAMS += test/subtitle-layout

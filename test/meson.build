@@ -51,6 +51,27 @@ layout_contract_test = executable(
 
 test('layout contract', layout_contract_test)
 
+# Reaches ass_test_set_alloc_countdown, which is internal and deliberately
+# absent from libass.sym. Autotools links it against libass_internal.la; meson
+# has no such convenience library, so it takes libass_for_tools and relies on
+# the shared build exporting internals -- which is true everywhere except
+# Windows, where the generated .def is honored. Skip it there rather than
+# exporting a test-only symbol to make one build system happy.
+if default_library != 'shared' or host_system != 'windows'
+    layout_alloc_test = executable(
+        'layout_alloc_test',
+        'layout_alloc.c',
+        install: false,
+        include_directories: incs,
+        dependencies: deps,
+        link_with: libass_for_tools,
+        c_args: ['-DASS_TEST_FONT="' + join_paths(meson.project_source_root(),
+                                                  'compare/test/font1.ttf') + '"'],
+    )
+
+    test('layout alloc', layout_alloc_test)
+endif
+
 if fontconfig
     subtitle_layout_test = executable(
         'subtitle_layout_test',
