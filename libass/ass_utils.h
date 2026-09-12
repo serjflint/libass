@@ -106,6 +106,36 @@ void *ass_try_realloc_array(void *ptr, size_t nmemb, size_t size);
 #define ASS_REALLOC_ARRAY(ptr, count) \
     (errno = 0, (ptr) = ass_try_realloc_array(ptr, count, sizeof(*ptr)), !errno)
 
+/*
+ * Allocation-failure seam for the layout collector, and only for it.
+ *
+ * The layout contract says a limit or a failed allocation clears the layout and
+ * leaves the ordinary images untouched. libass has no allocator hook, so
+ * without a seam that claim can only be argued, and every allocation in the
+ * collector is an untested branch.
+ *
+ * The counter lives on the renderer rather than in a global, so two renderers
+ * cannot disturb each other and there is nothing to race. Zero -- the value a
+ * renderer is created with -- disables it entirely, so a production build takes
+ * one predictable branch per collected record and nothing else.
+ *
+ * The setter is absent from libass.sym, which keeps it out of the autotools
+ * build (libtool -export-symbols) and out of the meson Windows build (the
+ * generated .def). The meson shared build on other platforms applies no
+ * visibility control and exports it along with ~180 other internals; that build
+ * already declares itself unsuitable for distribution, so this is one more of a
+ * known set rather than a new exposure -- but it is not the absolute the
+ * sentence above would otherwise imply.
+ *
+ * Counting down to exactly one failure, rather than failing everything after a
+ * point, is what lets a test sweep the sites one at a time and assert the same
+ * outcome at each.
+ */
+static inline bool ass_alloc_should_fail(size_t *countdown)
+{
+    return countdown && *countdown && !--*countdown;
+}
+
 unsigned ass_utf8_get_char(char **str);
 unsigned ass_utf8_put_char(char *dest, uint32_t ch);
 void ass_utf16be_to_utf8(char *dst, size_t dst_size, uint8_t *src, size_t src_size);

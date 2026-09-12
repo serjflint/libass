@@ -32,10 +32,6 @@ typedef struct {
 } ASS_Vector;
 
 typedef struct {
-    double x, y;
-} ASS_DVector;
-
-typedef struct {
     int32_t x_min, y_min, x_max, y_max;
 } ASS_Rect;
 
