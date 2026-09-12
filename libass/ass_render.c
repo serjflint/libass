@@ -3159,10 +3159,13 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     event_images->imgs = render_text(state);
 
     if (collect_metrics) {
-        event_images->metrics.struct_size = FIELD_END(ASS_LayoutEvent, next);
+        event_images->metrics.struct_size =
+            FIELD_END(ASS_LayoutEvent, event_index);
         event_images->metrics.start_ms = event->Start;
         event_images->metrics.duration_ms = event->Duration;
         event_images->metrics.has_duration = 1;
+        event_images->metrics.event_index =
+            (int) (event - render_priv->track->events);
         event_images->metrics.units = state->cluster_metrics;
         if (!finalize_metrics_text(state, &event_images->metrics)) {
             event_images->metrics.text = NULL;
