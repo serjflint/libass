@@ -97,6 +97,33 @@ static const char duplicate_fixture[] =
     "Dialogue: 0,0:00:10.00,0:00:14.00,Default,,0,0,0,,later two\n"
     "Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{\\pos(20,20)}twin\n";
 
+/*
+ * For the prune ordering. Two events have already ended at the render time
+ * used below, so libass drops them mid-call; one future event survives and is
+ * not rendered, which keeps the twins' surviving slots (1 and 2) different
+ * from their output order (0 and 1).
+ */
+static const char prune_fixture[] =
+    "[Script Info]\n"
+    "ScriptType: v4.00+\n"
+    "PlayResX: 320\n"
+    "PlayResY: 240\n"
+    "[V4+ Styles]\n"
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+    "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
+    "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
+    "MarginR, MarginV, Encoding\n"
+    "Style: Default,Aileron,28,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,"
+    "0,0,0,0,100,100,0,0,1,1,1,2,10,10,10,1\n"
+    "[Events]\n"
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    "Dialogue: 0,0:00:00.00,0:00:00.50,Default,,0,0,0,,gone one\n"
+    "Dialogue: 0,0:00:20.00,0:00:24.00,Default,,0,0,0,,future\n"
+    "Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{\\pos(20,20)}twin\n"
+    "Dialogue: 0,0:00:00.00,0:00:00.50,Default,,0,0,0,,gone two\n"
+    "Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{\\pos(20,20)}twin\n"
+    "Dialogue: 0,0:00:00.00,0:00:01.50,Default,,0,0,0,,inside the delay\n";
+
 static ASS_Renderer *new_renderer(ASS_Library *library)
 {
     ASS_Renderer *renderer = ass_renderer_init(library);
@@ -310,6 +337,119 @@ int main(void)
     assert(!claimed[2]);
 
     ass_free_track(twins);
+
+    /*
+     * libass prunes expired events inside the render call when the caller has
+     * enabled it. If that happens after the layout is collected, every
+     * published index describes an array the caller no longer has: at best out
+     * of range, at worst resolving to a different event that carries the same
+     * timing -- which is exactly the case event_index exists to disambiguate,
+     * so the timing assertion above would pass on it.
+     */
+    ASS_Track *pruned = ass_read_memory(library, (char *) prune_fixture,
+                                        sizeof(prune_fixture) - 1, NULL);
+    assert(pruned);
+    assert(pruned->n_events == 6);
+    /*
+     * A nonzero delay, so the `- prune_delay` term is observable. At now=2000
+     * the threshold is 1000: the two events ending at 1000 go, and the one
+     * ending at 1500 stays. Drop the delay term and the threshold becomes 2000,
+     * which takes that event too -- the n_events control below catches it.
+     */
+    ass_configure_prune(pruned, 1000);
+    result = render(renderer, pruned, 2000, &limits);
+    assert(result->layout_status == ASS_LAYOUT_OK);
+    /* The prune really ran, and took exactly the two fully-expired events. */
+    assert(pruned->n_events == 4);
+
+    size_t pruned_count = 0;
+    for (const ASS_LayoutEvent *e = result->layout->events; e; e = e->next) {
+        assert(e->event_index >= 0 && e->event_index < pruned->n_events);
+        assert(pruned->events[e->event_index].Start == e->start_ms);
+        assert(pruned->events[e->event_index].Duration == e->duration_ms);
+        /* Not the output ordinal: the surviving future event holds slot 0. */
+        assert(e->event_index == (int) pruned_count + 1);
+        pruned_count++;
+    }
+    assert(pruned_count == 2);
+
+    /*
+     * Moving the prune ahead of layout is only safe if it does not change what
+     * gets rendered. Same document, same time, prune off: the layout must be
+     * identical, which is the claim that a rendered event is never a prunable
+     * one.
+     */
+    ASS_Track *unpruned = ass_read_memory(library, (char *) prune_fixture,
+                                          sizeof(prune_fixture) - 1, NULL);
+    assert(unpruned);
+    const ASS_RenderResult *ref = render(renderer, unpruned, 2000, &limits);
+    assert(ref->layout_status == ASS_LAYOUT_OK);
+    assert(unpruned->n_events == 6);  /* untouched, so this is the control */
+
+    /*
+     * Walk both layouts in lockstep rather than comparing totals. Counting is
+     * the wrong oracle here: the way an earlier prune could change output is
+     * through the event array the render loop and collision resolution walk,
+     * and that moves geometry, not cardinality. This fixture's two rendered
+     * events are literal twins, so laying out the wrong one is invisible to
+     * every counter and visible in pos.
+     */
+    ASS_LayoutRequest ref_limits = limits;
+    const ASS_LayoutEvent *a = render(renderer, pruned, 2000, &ref_limits)->layout->events;
+    /* Both results cannot be live at once -- the record is renderer-owned and
+     * reused -- so the reference is re-rendered on a second renderer. */
+    ASS_Renderer *other = new_renderer(library);
+    const ASS_RenderResult *ref2 = render(other, unpruned, 2000, &ref_limits);
+    assert(ref2->layout_status == ASS_LAYOUT_OK);
+    const ASS_LayoutEvent *b = ref2->layout->events;
+
+    for (; a && b; a = a->next, b = b->next) {
+        assert(a->start_ms == b->start_ms && a->duration_ms == b->duration_ms);
+        assert(a->text_length == b->text_length);
+        assert(!memcmp(a->text, b->text, a->text_length));
+        /* event_index is expected to differ: the pruned array is shorter. */
+        const ASS_LayoutUnit *ua = a->units, *ub = b->units;
+        for (; ua && ub; ua = ua->next, ub = ub->next) {
+            assert(ua->pos.x == ub->pos.x && ua->pos.y == ub->pos.y);
+            assert(ua->advance.x == ub->advance.x && ua->advance.y == ub->advance.y);
+            assert(ua->line == ub->line);
+            assert(ua->text_start == ub->text_start && ua->text_end == ub->text_end);
+            assert(ua->logical_bounds.x == ub->logical_bounds.x);
+            assert(ua->logical_bounds.w == ub->logical_bounds.w);
+        }
+        assert(!ua && !ub);
+    }
+    assert(!a && !b);
+    ass_renderer_done(other);
+
+    /*
+     * A frame that fails to start prunes nothing. The prune sits after the
+     * ass_start_frame check for that reason, and nothing tested it. A renderer
+     * with a zero frame size returns NOT_READY before touching the track, so
+     * the event array must come back untouched. The render() helper asserts
+     * ASS_RENDER_OK, so this calls the entry point directly.
+     */
+    ASS_Renderer *stillborn = ass_renderer_init(library);
+    assert(stillborn);
+    ass_set_frame_size(stillborn, 0, 0);
+    ass_set_fonts(stillborn, ASS_TEST_FONT, "Aileron", ASS_FONTPROVIDER_NONE, NULL, 1);
+    ass_configure_prune(pruned, 0);
+    int before = pruned->n_events;
+    ASS_RenderRequest stillborn_req = {
+        .struct_size = sizeof(stillborn_req),
+        .track = pruned,
+        .now_ms = 100000,   /* everything is expired by now */
+        .layout = &limits,
+    };
+    const ASS_RenderResult *stillborn_res =
+        ass_render_frame2(stillborn, &stillborn_req);
+    assert(stillborn_res);
+    assert(stillborn_res->status == ASS_RENDER_NOT_READY);
+    assert(pruned->n_events == before);
+    ass_renderer_done(stillborn);
+
+    ass_free_track(unpruned);
+    ass_free_track(pruned);
     ass_free_track(track);
     ass_renderer_done(renderer);
     ass_library_done(library);
