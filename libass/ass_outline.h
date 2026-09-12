@@ -94,7 +94,8 @@ void ass_outline_clear(ASS_Outline *outline);
 bool ass_outline_alloc(ASS_Outline *outline, size_t n_points, size_t n_segments);
 void ass_outline_free(ASS_Outline *outline);
 
-bool ass_metric_outline_copy(ASS_LayoutOutline *metrics_outline, ASS_Outline *outline);
+bool ass_metric_outline_copy(ASS_LayoutOutline *metrics_outline,
+                             ASS_Outline *outline, size_t *alloc_countdown);
 void ass_metric_outline_free(ASS_LayoutOutline *metrics_outline);
 
 // expects preallocated outline and works inplace

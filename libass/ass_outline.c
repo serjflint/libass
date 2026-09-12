@@ -81,13 +81,16 @@ void ass_outline_free(ASS_Outline *outline)
  * \brief Allocate an ASS_LayoutOutline's memory and copy the given
  * ASS_Outline's data into it.
  */
-bool ass_metric_outline_copy(ASS_LayoutOutline *metrics_outline, ASS_Outline *outline)
+bool ass_metric_outline_copy(ASS_LayoutOutline *metrics_outline,
+                             ASS_Outline *outline, size_t *alloc_countdown)
 {
     metrics_outline->point_count = outline->n_points;
     metrics_outline->segment_count = outline->n_segments;
     metrics_outline->points = outline->n_points
+        && !ass_alloc_should_fail(alloc_countdown)
         ? malloc(sizeof(ASS_DVector) * outline->n_points) : NULL;
     metrics_outline->segments = outline->n_segments
+        && !ass_alloc_should_fail(alloc_countdown)
         ? malloc(outline->n_segments) : NULL;
     if ((outline->n_points && !metrics_outline->points) ||
         (outline->n_segments && !metrics_outline->segments)) {
