@@ -3645,6 +3645,19 @@ static int ass_render_frame_internal(ASS_Renderer *priv, ASS_Track *track,
 
     *render_status = ASS_RENDER_OK;
 
+    // Collect garbage before laying anything out, not after. Pruning memmoves
+    // track->events and lowers n_events, so anything the render says *about*
+    // the track -- ASS_LayoutEvent.event_index -- has to be derived from the
+    // array the caller will hold when the call returns.
+    //
+    // The set removed is the same either way: prune drops events whose end is
+    // before now - prune_delay, and an event is only rendered while now is
+    // still inside it, so a rendered event is never a pruned one. Running it
+    // here rather than at the tail also keeps the previous rule that a frame
+    // which failed to start prunes nothing.
+    if (track->parser_priv->prune_delay >= 0)
+        ass_prune_events(track, now - track->parser_priv->prune_delay);
+
     // render events separately
     int cnt = 0;
     for (int i = 0; i < track->n_events; i++) {
@@ -3721,9 +3734,6 @@ static int ass_render_frame_internal(ASS_Renderer *priv, ASS_Track *track,
     // free the previous image list
     ass_frame_unref(priv->prev_images_root);
     priv->prev_images_root = NULL;
-
-    if (track->parser_priv->prune_delay >= 0)
-        ass_prune_events(track, now - track->parser_priv->prune_delay);
 
     priv->metrics_count = collect_metrics ? cnt : 0;
     if (collect_metrics && priv->metrics_status != ASS_LAYOUT_OK)

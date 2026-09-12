@@ -74,14 +74,18 @@ typedef struct ass_layout_event {
     int has_bitmap_bounds;
     struct ass_layout_event *next;
     /*
-     * This event's index in track->events as the track stood at the call.
-     * The caller owns the track, so this is a way back into data it already
-     * holds, and the only way to tell apart two events carrying identical
-     * text and timing -- which layered signs and karaoke routinely produce.
+     * This event's index in track->events, valid for the track as it stands
+     * when the call returns. It is the only way to tell apart two events
+     * carrying identical text and timing, which layered signs and karaoke
+     * routinely produce.
      *
-     * It identifies a slot, not a subtitle line: anything that mutates the
-     * event array, such as ass_flush_events(), invalidates it. All of those
-     * are caller operations.
+     * It identifies a slot, not a subtitle line, and its lifetime is the
+     * result's: read it before the next rendering call on this renderer, and
+     * before anything mutates the event array. ass_flush_events(),
+     * ass_process_chunk() and any compaction the caller performs itself all
+     * invalidate it. Automatic pruning (ass_configure_prune) does too, but
+     * never for the result in hand: a render prunes before it lays out, so the
+     * index it publishes already describes the pruned array.
      */
     int event_index;
 } ASS_LayoutEvent;
