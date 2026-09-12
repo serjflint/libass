@@ -105,6 +105,17 @@ typedef struct ass_layout_event {
     ASS_LayoutRect bitmap_bounds;
     int has_bitmap_bounds;
     struct ass_layout_event *next;
+    /*
+     * This event's index in track->events as the track stood at the call.
+     * The caller owns the track, so this is a way back into data it already
+     * holds, and the only way to tell apart two events carrying identical
+     * text and timing -- which layered signs and karaoke routinely produce.
+     *
+     * It identifies a slot, not a subtitle line: anything that mutates the
+     * event array, such as ass_flush_events(), invalidates it. All of those
+     * are caller operations.
+     */
+    int event_index;
 } ASS_LayoutEvent;
 
 typedef enum ass_layout_unit_mode {
