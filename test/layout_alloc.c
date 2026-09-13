@@ -17,6 +17,9 @@
 
 #include "../libass/ass.h"
 #include "../libass/ass_layout.h"
+/* ass_compat.h first, as every library source does: ass_utils.h uses
+ * __has_builtin, which only ass_compat.h defines away for tcc. */
+#include "../libass/ass_compat.h"
 #include "../libass/ass_render.h"   /* ass_test_set_alloc_countdown */
 
 #ifndef ASS_TEST_FONT
