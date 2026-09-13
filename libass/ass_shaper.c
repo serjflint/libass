@@ -624,6 +624,7 @@ shape_harfbuzz_process_run(GlyphInfo *glyphs, hb_buffer_t *buf, int offset)
         unsigned idx = glyph_info[j].cluster + offset;
         GlyphInfo *info = glyphs + idx;
         GlyphInfo *root = info;
+        root->cluster_root = true;
 
         // if we have more than one glyph per cluster, allocate a new one
         // and attach to the root glyph
@@ -652,6 +653,24 @@ shape_harfbuzz_process_run(GlyphInfo *glyphs, hb_buffer_t *buf, int offset)
     }
 }
 
+static void set_harfbuzz_cluster_ranges(GlyphInfo *glyphs, int start, int end)
+{
+    size_t next = end;
+    for (int i = end - 1; i >= start; i--) {
+        GlyphInfo *root = &glyphs[i];
+        if (!root->cluster_root)
+            continue;
+        root->cluster_start = i;
+        root->cluster_end = next;
+        for (GlyphInfo *glyph = root->next; glyph; glyph = glyph->next) {
+            glyph->cluster_start = root->cluster_start;
+            glyph->cluster_end = root->cluster_end;
+            glyph->cluster_root = false;
+        }
+        next = i;
+    }
+}
+
 /**
  * \brief Shape event text with HarfBuzz. Full OpenType shaping.
  * \param glyphs glyph clusters
@@ -664,12 +683,17 @@ static bool shape_harfbuzz(ASS_Shaper *shaper, GlyphInfo *glyphs, size_t len)
     hb_segment_properties_t props = HB_SEGMENT_PROPERTIES_DEFAULT;
 
     // Initialize: skip all glyphs, this is undone later as needed
-    for (i = 0; i < len; i++)
+    for (i = 0; i < len; i++) {
         glyphs[i].skip = true;
+        glyphs[i].cluster_root = false;
+    }
 
     for (i = 0; i < len; i++) {
         if (glyphs[i].drawing_text.str) {
             glyphs[i].skip = false;
+            glyphs[i].cluster_root = true;
+            glyphs[i].cluster_start = i;
+            glyphs[i].cluster_end = i + 1;
             continue;
         }
 
@@ -716,6 +740,7 @@ static bool shape_harfbuzz(ASS_Shaper *shaper, GlyphInfo *glyphs, size_t len)
 
         shape_harfbuzz_process_run(glyphs, buf,
                 shaper->whole_text_layout ? 0 : offset - lead_context);
+        set_harfbuzz_cluster_ranges(glyphs, offset, i + 1);
         hb_buffer_reset(buf);
 
         hb_font_destroy(font);
