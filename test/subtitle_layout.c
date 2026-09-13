@@ -25,6 +25,17 @@
 #define __has_feature(x) 0
 #endif
 
+/* Size tags are the end offset of the last known field, never sizeof: a
+ * record with tail padding reports less than sizeof (ASS_LayoutEvent on
+ * LP64). Same rule and bound as layout_contract.c. */
+#define END_OF(type, field) (offsetof(type, field) + sizeof(((type *) 0)->field))
+#define ALIGN_OF(type) offsetof(struct { char c_; type t_; }, t_)
+#define ASSERT_SIZE_TAG(type, last, tag)               \
+    do {                                               \
+        assert((tag) == END_OF(type, last));           \
+        assert(sizeof(type) - (tag) < ALIGN_OF(type)); \
+    } while (0)
+
 static const char fixture[] =
     "[Script Info]\n"
     "ScriptType: v4.00+\n"
@@ -180,14 +191,14 @@ static size_t validate_metrics(ASS_LayoutEvent *metrics)
 {
     size_t events = 0;
     for (; metrics; metrics = metrics->next) {
-        assert(metrics->struct_size == sizeof(*metrics));
+        ASSERT_SIZE_TAG(ASS_LayoutEvent, event_index, metrics->struct_size);
         assert(metrics->has_duration);
         assert(metrics->text);
         assert(strlen(metrics->text) == metrics->text_length);
         size_t previous = 0;
         for (ASS_LayoutUnit *cluster = metrics->units;
              cluster; cluster = cluster->next) {
-            assert(cluster->struct_size == sizeof(*cluster));
+            ASSERT_SIZE_TAG(ASS_LayoutUnit, next, cluster->struct_size);
             assert(cluster->text_start < cluster->text_end);
             assert(cluster->text_start == previous);
             assert(cluster->text_end <= metrics->text_length);
@@ -258,7 +269,7 @@ static ASS_Image *render_bounded(ASS_Renderer *renderer, ASS_Track *track,
     ASS_Image *images = result->images;
     *status = result->layout_status;
     if (layout) {
-        assert(layout->struct_size == sizeof(*layout));
+        ASSERT_SIZE_TAG(ASS_Layout, events, layout->struct_size);
         assert(layout->unit_mode == ASS_LAYOUT_UNIT_SIMPLE_SCALAR ||
                layout->unit_mode == ASS_LAYOUT_UNIT_SHAPING_CLUSTER);
     }
@@ -316,7 +327,7 @@ static ASS_Image *render_unbounded(ASS_Renderer *renderer, ASS_Track *track,
     ASS_Image *images = result->images;
     if (layout) {
         assert(status == ASS_LAYOUT_OK);
-        assert(layout->struct_size == sizeof(*layout));
+        ASSERT_SIZE_TAG(ASS_Layout, events, layout->struct_size);
         assert(layout->unit_mode == ASS_LAYOUT_UNIT_SIMPLE_SCALAR ||
                layout->unit_mode == ASS_LAYOUT_UNIT_SHAPING_CLUSTER);
     }
